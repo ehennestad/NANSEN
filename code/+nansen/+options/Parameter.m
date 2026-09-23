@@ -6,19 +6,20 @@ classdef Parameter
 %   metadata that controls how it is displayed in user interfaces and
 %   whether it contributes to the fingerprint (hash) of an options set.
 %
-%   Parameters are normally created through nansen.options.Schema/addParameter.
+%   Parameters are normally created with nansen.options.Schema/addParameter
 %
-%   p = nansen.options.Parameter(name, defaultValue, Name, Value, ...)
+%   p = nansen.options.Parameter(name, defaultValue, Name=Value, ...)
 %
 %   INPUTS:
 %       name         : Name of parameter. Use dots for parameters that
-%                      belong to a group, e.g. 'Preprocessing.binSize'
+%                      belong to a group, e.g. "Preprocessing.binSize"
 %       defaultValue : Default value of parameter. The class of the
-%                      default value determines the class of the parameter.
+%                      default value is the class of the parameter, i.e.
+%                      values are converted to this class.
 %
-%   NAME-VALUE PAIRS (all optional):
+%   NAME-VALUE ARGUMENTS (all optional, any public property):
 %       Description : Text describing what the parameter does.
-%       Units       : Unit of the parameter value, e.g. 's' or 'pixels'.
+%       Units       : Unit of the parameter value, e.g. "s" or "pixels".
 %       Label       : Short human readable label for user interfaces.
 %       Choices     : Cell array of allowed values (enumeration).
 %       Min, Max    : Inclusive numeric bounds.
@@ -27,8 +28,8 @@ classdef Parameter
 %                     dimension means any length, e.g. [1 NaN] for row vectors.
 %       Validator   : Function handle which either returns false or throws
 %                     an error if a value is invalid (e.g. @mustBePositive).
-%       Widget      : User interface hint for the options editor, e.g.
-%                     'slider', 'uigetdir', 'uigetfile', 'multilinechar'.
+%       Widget      : User interface hint: "slider", "folder", "file",
+%                     "multiline" or "color".
 %       Transient   : true if the parameter does not affect the result of
 %                     a method (e.g. verbosity or number of workers).
 %                     Transient parameters are excluded from options hashes.
@@ -38,78 +39,87 @@ classdef Parameter
 %       Deprecated  : Text explaining why parameter is deprecated/what
 %                     to use instead. Empty if not deprecated.
 %
-%   See also nansen.options.Schema
+%   Example:
+%       p = nansen.options.Parameter("binSize", 5, Min=1, Integer=true, ...
+%           Description="Number of frames to bin", Units="frames");
+%       [isValid, message] = p.validate(0)
+%
+%   See also nansen.options.Schema nansen.options.ParameterType
 
     properties
-        Name char = ''              % Full (dotted) name of parameter
-        Default = []                % Default value
-        Description char = ''       % Description of parameter
-        Units char = ''             % Units of parameter value
-        Label char = ''             % Label to show in user interfaces
-        Choices cell = {}           % Allowed values (if enumeration)
-        Min double = -inf           % Minimum value (numeric parameters)
-        Max double = inf            % Maximum value (numeric parameters)
-        Integer logical = false     % Whether value must be integer valued
-        Size double = []            % Required size of value
-        Validator = []              % Custom validation function
-        Widget = ''                 % User interface hint
-        Transient logical = false   % Parameter does not affect results
-        Internal logical = false    % Parameter is hidden from users
-        Advanced logical = false    % Parameter is an advanced setting
-        Since char = ''             % Schema version parameter was added in
-        Deprecated char = ''        % Deprecation message
+        Name (1,1) string = ""
+        Default = []
+        Description (1,1) string = ""
+        Units (1,1) string = ""
+        Label (1,1) string = ""
+        Choices (1,:) cell = cell(1, 0)
+        Min (1,1) double = -Inf
+        Max (1,1) double = Inf
+        Integer (1,1) logical = false
+        Size (1,:) double = double.empty(1, 0)
+        Validator {nansen.options.internal.mustBeFunctionHandleOrEmpty} = []
+        Widget (1,1) string {mustBeMember(Widget, ["", "slider", "folder", "file", "multiline", "color"])} = ""
+        Transient (1,1) logical = false
+        Internal (1,1) logical = false
+        Advanced (1,1) logical = false
+        Since (1,1) string = ""
+        Deprecated (1,1) string = ""
     end
 
     properties (SetAccess = private)
-        Class char = ''             % Class of value (from default value)
+        Class (1,1) string = "double"   % Class of value (from default value)
     end
 
-    properties (Dependent)
-        Type                        % Type of parameter (derived)
-        GroupName                   % Name of group (derived from name)
-        ShortName                   % Name without group (derived from name)
-    end
-
-    properties (Constant, Hidden)
-        NUMERIC_CLASSES = {'double', 'single', 'int8', 'uint8', 'int16', ...
-            'uint16', 'int32', 'uint32', 'int64', 'uint64'}
+    properties (Dependent, SetAccess = private)
+        Type (1,1) nansen.options.ParameterType   % Type of parameter
+        GroupName (1,1) string          % Name of group ("" if not in a group)
+        ShortName (1,1) string          % Name without group
+        DisplayLabel (1,1) string       % Label, or label generated from name
+        IsDeprecated (1,1) logical
     end
 
     methods % Constructor
 
-        function obj = Parameter(name, defaultValue, varargin)
+        function obj = Parameter(name, defaultValue, attributes)
+            arguments
+                name (1,1) string = ""
+                defaultValue = []
+                attributes.?nansen.options.Parameter
+            end
 
             if nargin == 0; return; end
 
-            name = char(name);
-            nansen.options.Parameter.validateName(name)
-
+            nansen.options.Parameter.mustBeValidName(name)
             obj.Name = name;
-            obj.Default = nansen.options.Parameter.normalizeValue(defaultValue);
-            obj.Class = class(obj.Default);
+            obj.Default = defaultValue;
+            obj.Class = class(defaultValue);
 
-            obj = obj.applyNameValuePairs(varargin{:});
+            obj = obj.applyAttributes(attributes);
             obj.assertValidDefault()
         end
     end
 
     methods
 
-        function obj = modify(obj, varargin)
-        %modify Modify attributes of the parameter
+        function obj = modify(obj, attributes)
+        %modify Modify attributes (incl. Default) of the parameter
         %
-        %   p = p.modify(Name, Value, ...) modifies attributes of the
-        %   parameter. Accepts the same name-value pairs as the
-        %   constructor, and additionally 'Default'.
+        %   p = p.modify(Name=Value, ...)
+        %
+        %   Example:
+        %       p = p.modify(Default=10, Max=100)
 
-            [defaultValue, varargin] = popNameValue(varargin, 'Default');
-
-            if ~isempty(defaultValue)
-                obj.Default = nansen.options.Parameter.normalizeValue(defaultValue{1});
-                obj.Class = class(obj.Default);
+            arguments
+                obj (1,1) nansen.options.Parameter
+                attributes.?nansen.options.Parameter
             end
 
-            obj = obj.applyNameValuePairs(varargin{:});
+            if isfield(attributes, "Default")
+                obj.Default = attributes.Default;
+                obj.Class = class(attributes.Default);
+            end
+
+            obj = obj.applyAttributes(attributes);
             obj.assertValidDefault()
         end
 
@@ -117,63 +127,70 @@ classdef Parameter
         %validate Check if a value is valid for this parameter
         %
         %   [isValid, message] = p.validate(value) returns true if value is
-        %   valid. If not, message contains a description of the problem.
+        %   valid. If not, message describes the problem.
 
-            message = '';
-            value = nansen.options.Parameter.normalizeValue(value);
+            arguments
+                obj (1,1) nansen.options.Parameter
+                value
+            end
+
+            import nansen.options.ParameterType
+
+            message = "";
 
             switch obj.Type
-                case 'logical'
+                case ParameterType.Logical
                     isValid = islogical(value) || ( isnumeric(value) && ...
                         all(value(:) == 0 | value(:) == 1) );
-                    if ~isValid; message = 'Value must be logical (true/false)'; end
-                case 'numeric'
+                    message = "Value must be logical (true/false)";
+                case ParameterType.Numeric
                     isValid = isnumeric(value) && isreal(value);
-                    if ~isValid; message = 'Value must be numeric'; end
-                case 'text'
-                    isValid = ischar(value) && (isrow(value) || isempty(value));
-                    if ~isValid; message = 'Value must be a character vector'; end
-                case 'list'
-                    isValid = iscell(value);
-                    if ~isValid; message = 'Value must be a cell array'; end
-                case 'function'
-                    isValid = isa(value, 'function_handle') || ...
-                        (ischar(value) && ~isempty(value));
-                    if ~isValid; message = 'Value must be a function handle or function name'; end
-                case 'choice'
+                    message = "Value must be numeric";
+                case ParameterType.Text
+                    isValid = istext(value) && (isscalar(string(value)) || isempty(value));
+                    message = "Value must be text";
+                case ParameterType.List
+                    isValid = iscell(value) || isstring(value);
+                    message = "Value must be a list (cell array or string array)";
+                case ParameterType.Function
+                    isValid = isa(value, "function_handle") || ...
+                        (istext(value) && strlength(string(value)) > 0);
+                    message = "Value must be a function handle or function name";
+                case ParameterType.Choice
                     isValid = obj.isValidChoice(value);
-                    if ~isValid
-                        message = sprintf('Value must be one of: %s', ...
-                            nansen.options.internal.valueToString(obj.Choices, Inf));
-                    end
+                    message = "Value must be one of: " + ...
+                        nansen.options.internal.valueToString(obj.Choices, MaxLength=Inf);
+                case ParameterType.Struct
+                    isValid = isstruct(value);
+                    message = "Value must be a struct";
                 otherwise
                     isValid = true;
             end
 
             if ~isValid; return; end
+            message = "";
 
             if isnumeric(value) && ~isempty(value)
                 if any(value(:) < obj.Min)
                     isValid = false;
-                    message = sprintf('Value must be greater than or equal to %g', obj.Min);
+                    message = sprintf("Value must be greater than or equal to %g", obj.Min);
                 elseif any(value(:) > obj.Max)
                     isValid = false;
-                    message = sprintf('Value must be less than or equal to %g', obj.Max);
+                    message = sprintf("Value must be less than or equal to %g", obj.Max);
                 elseif obj.Integer && any(round(value(:)) ~= value(:))
                     isValid = false;
-                    message = 'Value must be integer valued';
+                    message = "Value must be integer valued";
                 end
                 if ~isValid; return; end
             end
 
             if ~isempty(obj.Size)
-                requiredSize = obj.Size;
                 valueSize = size(value);
-                isValid = numel(valueSize) == numel(requiredSize) && ...
-                    all( isnan(requiredSize) | valueSize == requiredSize );
+                isValid = numel(valueSize) == numel(obj.Size) && ...
+                    all( isnan(obj.Size) | valueSize == obj.Size );
                 if ~isValid
-                    sizeStr = strrep(mat2str(requiredSize), 'NaN', 'n');
-                    message = sprintf('Value must have size %s', sizeStr);
+                    message = "Value must have size " + ...
+                        replace(mat2str(obj.Size), "NaN", "n");
                     return
                 end
             end
@@ -188,113 +205,100 @@ classdef Parameter
         %
         %   value = p.coerce(value) converts values that are equivalent
         %   but differ in class or shape from the default value, e.g. values
-        %   read from JSON files (numbers as double, arrays as columns) or
-        %   given as strings instead of character vectors.
+        %   read from JSON files (numbers as double, arrays as columns,
+        %   text as char).
 
-            value = nansen.options.Parameter.normalizeValue(value);
-            defaultValue = obj.Default;
+            arguments
+                obj (1,1) nansen.options.Parameter
+                value
+            end
 
-            if strcmp(obj.Class, 'logical') && isnumeric(value) && ...
-                    all(value(:) == 0 | value(:) == 1)
-                value = logical(value);
-
-            elseif any(strcmp(obj.Class, obj.NUMERIC_CLASSES)) && ...
-                    (isnumeric(value) || islogical(value)) && ...
-                    ~strcmp(class(value), obj.Class)
-                value = cast(value, obj.Class);
-
-            elseif strcmp(obj.Class, 'cell') && isempty(value) && ~iscell(value)
-                value = {};
-
-            elseif strcmp(obj.Class, 'char') && iscell(value) && isscalar(value) ...
-                    && ischar(value{1})
-                value = value{1};
+            switch obj.Class
+                case "logical"
+                    if isnumeric(value) && all(value(:) == 0 | value(:) == 1)
+                        value = logical(value);
+                    end
+                case {'double', 'single', 'int8', 'uint8', 'int16', ...
+                        'uint16', 'int32', 'uint32', 'int64', 'uint64'}
+                    if (isnumeric(value) || islogical(value)) && class(value) ~= obj.Class
+                        value = cast(value, obj.Class);
+                    end
+                case "char"
+                    if isstring(value) && isscalar(value)
+                        value = char(value);
+                    elseif iscellstr(value) && isscalar(value)
+                        value = value{1};
+                    end
+                case "string"
+                    if ischar(value) || iscellstr(value)
+                        value = string(value);
+                    end
+                case "cell"
+                    if isstring(value)
+                        value = cellstr(value);
+                    elseif isempty(value) && ~iscell(value)
+                        value = {};
+                    end
+                case "function_handle"
+                    if istext(value) && strlength(string(value)) > 0
+                        value = str2func(value);
+                    end
             end
 
             % Match orientation of vectors
             if isvector(value) && ~isscalar(value) && ...
-                    isvector(defaultValue) && ~isscalar(defaultValue)
-                if isrow(defaultValue) && iscolumn(value)
-                    value = value';
-                elseif iscolumn(defaultValue) && isrow(value)
-                    value = value';
-                end
-            end
-        end
-
-        function config = getEditorConfig(obj)
-        %getEditorConfig Get configuration value for the structeditor app
-        %
-        %   The structeditor app (and the legacy options manager) supports
-        %   configuration fields in option structs: For a field "name", a
-        %   field "name_" specifies how the field should be displayed. This
-        %   method returns the value of such a configuration field, or []
-        %   if no configuration is needed.
-
-            config = [];
-
-            if obj.Internal
-                config = 'internal';
-            elseif ~isempty(obj.Choices)
-                config = obj.Choices;
-            elseif isstruct(obj.Widget) || isa(obj.Widget, 'function_handle')
-                config = obj.Widget;
-            elseif strcmp(obj.Widget, 'slider')
-                args = {'Min', obj.Min, 'Max', obj.Max};
-                if obj.Integer && isfinite(obj.Min) && isfinite(obj.Max)
-                    args = [args, {'nTicks', obj.Max - obj.Min + 1, 'TooltipPrecision', 0}];
-                end
-                config = struct('type', 'slider', 'args', {args});
-            elseif any(strcmp(obj.Widget, {'button', 'togglebutton', 'multilinechar'}))
-                config = struct('type', obj.Widget, 'args', {{}});
-            elseif ~isempty(obj.Widget)
-                config = obj.Widget;
-            elseif obj.Transient
-                config = 'transient';
+                    isvector(obj.Default) && ~isscalar(obj.Default) && ...
+                    isrow(obj.Default) ~= isrow(value)
+                value = value.';
             end
         end
 
         function S = toJsonSchema(obj)
         %toJsonSchema Get a JSON Schema (https://json-schema.org) description
 
+            arguments
+                obj (1,1) nansen.options.Parameter
+            end
+
+            import nansen.options.ParameterType
+
             S = struct();
 
             switch obj.Type
-                case 'logical'
-                    S.type = 'boolean';
-                case 'numeric'
-                    if obj.Integer; S.type = 'integer'; else; S.type = 'number'; end
-                case 'text'
-                    S.type = 'string';
-                case 'list'
-                    S.type = 'array';
-                case 'function'
-                    S.type = 'string';
+                case ParameterType.Logical
+                    S.type = "boolean";
+                case ParameterType.Numeric
+                    if obj.Integer; S.type = "integer"; else; S.type = "number"; end
+                case {ParameterType.Text, ParameterType.Function}
+                    S.type = "string";
+                case ParameterType.List
+                    S.type = "array";
+                case ParameterType.Struct
+                    S.type = "object";
             end
 
-            if isnumeric(obj.Default) && ~isscalar(obj.Default)
-                itemType = S.type;
-                S.type = 'array';
-                S.items = struct('type', itemType);
+            if obj.Type == ParameterType.Numeric && ~isscalar(obj.Default)
+                S.items = struct("type", S.type);
+                S.type = "array";
             end
 
-            if ~isempty(obj.Label); S.title = obj.Label; end
-            if ~isempty(obj.Description); S.description = obj.Description; end
+            S.title = obj.DisplayLabel;
+            if obj.Description ~= ""; S.description = obj.Description; end
             if ~isempty(obj.Choices); S.enum = obj.Choices; end
             if isfinite(obj.Min); S.minimum = obj.Min; end
             if isfinite(obj.Max); S.maximum = obj.Max; end
-            if ~isempty(obj.Units); S.units = obj.Units; end
+            if obj.Units ~= ""; S.units = obj.Units; end
 
-            if ~isa(obj.Default, 'function_handle')
-                S.default = obj.Default;
-            else
+            if isa(obj.Default, "function_handle")
                 S.default = func2str(obj.Default);
+            else
+                S.default = obj.Default;
             end
 
             if obj.Transient; S.transient = true; end
             if obj.Internal; S.internal = true; end
             if obj.Advanced; S.advanced = true; end
-            if ~isempty(obj.Deprecated)
+            if obj.IsDeprecated
                 S.deprecated = true;
                 S.deprecationMessage = obj.Deprecated;
             end
@@ -304,90 +308,68 @@ classdef Parameter
     methods % Set/get
 
         function type = get.Type(obj)
-            if ~isempty(obj.Choices)
-                type = 'choice';
-            elseif strcmp(obj.Class, 'logical')
-                type = 'logical';
-            elseif any(strcmp(obj.Class, obj.NUMERIC_CLASSES))
-                type = 'numeric';
-            elseif strcmp(obj.Class, 'char')
-                type = 'text';
-            elseif strcmp(obj.Class, 'cell')
-                type = 'list';
-            elseif strcmp(obj.Class, 'function_handle')
-                type = 'function';
-            else
-                type = 'any';
-            end
+            type = nansen.options.ParameterType.fromValue( ...
+                obj.Default, ~isempty(obj.Choices));
         end
 
         function name = get.GroupName(obj)
-            idx = find(obj.Name == '.', 1, 'last');
-            if isempty(idx)
-                name = '';
+            if contains(obj.Name, ".")
+                name = extractBefore(obj.Name, ...
+                    strlength(obj.Name) - strlength(obj.ShortName));
             else
-                name = obj.Name(1:idx-1);
+                name = "";
             end
         end
 
         function name = get.ShortName(obj)
-            idx = find(obj.Name == '.', 1, 'last');
-            if isempty(idx)
-                name = obj.Name;
+            parts = split(obj.Name, ".");
+            name = parts(end);
+        end
+
+        function label = get.DisplayLabel(obj)
+            if obj.Label ~= ""
+                label = obj.Label;
             else
-                name = obj.Name(idx+1:end);
+                % Convert camelCase to words: "binSize" -> "Bin size"
+                label = regexprep(obj.ShortName, "([a-z0-9])([A-Z])", "$1 $2");
+                label = lower(label);
+                label = upper(extractBefore(label, 2)) + extractAfter(label, 1);
             end
         end
 
-        function obj = set.Validator(obj, value)
-            assert(isempty(value) || isa(value, 'function_handle'), ...
-                'NANSEN:Options:InvalidAttribute', ...
-                'Validator must be a function handle')
-            obj.Validator = value;
-        end
-
-        function obj = set.Choices(obj, value)
-            if isstring(value); value = cellstr(value); end
-            obj.Choices = reshape(value, 1, []);
+        function tf = get.IsDeprecated(obj)
+            tf = obj.Deprecated ~= "";
         end
     end
 
     methods (Access = private)
 
-        function obj = applyNameValuePairs(obj, varargin)
-
-            if mod(numel(varargin), 2) ~= 0
-                error('NANSEN:Options:InvalidInput', ...
-                    'Attributes must be given as name-value pairs')
+        function obj = applyAttributes(obj, attributes)
+            ignoredNames = intersect(fieldnames(attributes), {'Name', 'Default'});
+            if ~isempty(ignoredNames)
+                attributes = rmfield(attributes, ignoredNames);
             end
-
-            allowedNames = {'Description', 'Units', 'Label', 'Choices', ...
-                'Min', 'Max', 'Integer', 'Size', 'Validator', 'Widget', ...
-                'Transient', 'Internal', 'Advanced', 'Since', 'Deprecated'};
-
-            for i = 1:2:numel(varargin)
-                attributeName = validatestring(char(varargin{i}), allowedNames);
-                value = varargin{i+1};
-                if isstring(value) && isscalar(value)
-                    value = char(value);
-                end
-                obj.(attributeName) = value;
+            for name = string(fieldnames(attributes))'
+                obj.(name) = attributes.(name);
             end
         end
 
         function assertValidDefault(obj)
             [isValid, message] = obj.validate(obj.Default);
             if ~isValid
-                error('NANSEN:Options:InvalidDefault', ...
-                    'Invalid default value for parameter "%s": %s', ...
+                error("NANSEN:Options:InvalidDefault", ...
+                    "Invalid default value for parameter ""%s"": %s", ...
                     obj.Name, message)
             end
         end
 
         function tf = isValidChoice(obj, value)
-            if ischar(value)
-                tf = any(cellfun(@(c) ischar(c) && strcmp(c, value), obj.Choices));
-            elseif iscell(value) % Multiple selection
+            if istext(value) && isscalar(string(value))
+                isTextChoice = cellfun(@(c) istext(c) && isscalar(string(c)), obj.Choices);
+                textChoices = string(obj.Choices(isTextChoice));
+                tf = any(textChoices == string(value));
+            elseif iscell(value) || (isstring(value) && ~isscalar(value)) % Multiple selection
+                if isstring(value); value = num2cell(value); end
                 tf = all(cellfun(@(v) obj.isValidChoice(v), value));
             else
                 tf = any(cellfun(@(c) isequal(c, value), obj.Choices));
@@ -396,27 +378,22 @@ classdef Parameter
     end
 
     methods (Static)
-
-        function value = normalizeValue(value)
-        %normalizeValue Convert string types to char / cellstr
-            if isstring(value)
-                if isscalar(value)
-                    value = char(value);
-                else
-                    value = cellstr(value);
-                end
+        function mustBeValidName(name)
+        %mustBeValidName Validate that a parameter name is valid
+        %
+        %   Names must be valid variable names, optionally separated by
+        %   dots, and can not end with an underscore (reserved for legacy
+        %   configuration fields).
+            arguments
+                name (1,1) string
             end
-        end
-
-        function validateName(name)
-        %validateName Check that a parameter name is valid
-            parts = strsplit(name, '.');
-            isValid = all(cellfun(@isvarname, parts)) && ~strcmp(name(end), '_');
+            parts = split(name, ".");
+            isValid = all(arrayfun(@isvarname, parts)) && ~endsWith(name, "_");
             if ~isValid
-                error('NANSEN:Options:InvalidName', ...
-                    ['"%s" is not a valid parameter name. Names must be ', ...
-                    'valid variable names, optionally separated by dots, ', ...
-                    'and can not end with an underscore.'], name)
+                throwAsCaller(MException("NANSEN:Options:InvalidName", ...
+                    """%s"" is not a valid parameter name. Names must be " + ...
+                    "valid variable names, optionally separated by dots, " + ...
+                    "and can not end with an underscore.", name))
             end
         end
     end
@@ -429,39 +406,38 @@ function [isValid, message] = runValidator(validatorFcn, value)
 %   error for invalid values (like mustBePositive or @(x) assert(...))
 
     isValid = true;
-    message = '';
+    message = "";
 
     try
+        numOutputs = nargout(validatorFcn);
+    catch
+        numOutputs = -1; % Unknown
+    end
+
+    try
+        if numOutputs == 0
+            validatorFcn(value);
+            return
+        end
+
         try
             result = validatorFcn(value);
         catch ME
-            if any(strcmp(ME.identifier, {'MATLAB:maxlhs', 'MATLAB:TooManyOutputs'})) ...
-                    || ~isempty(regexpi(ME.message, 'too many output', 'once'))
+            % Anonymous functions report nargout = -1 (varargout) even if
+            % the function they call has no output, e.g. @(x) assert(...)
+            if any(strcmp(ME.identifier, ["MATLAB:maxlhs", "MATLAB:TooManyOutputs"]))
                 validatorFcn(value);
-                result = true;
-            else
-                rethrow(ME)
+                return
             end
+            rethrow(ME)
         end
 
         if (islogical(result) || isnumeric(result)) && ~isempty(result) && ~all(result(:))
             isValid = false;
-            message = sprintf('Value failed validation by %s', func2str(validatorFcn));
+            message = "Value failed validation by " + func2str(validatorFcn);
         end
     catch ME
         isValid = false;
-        message = ME.message;
-    end
-end
-
-function [value, args] = popNameValue(args, name)
-%popNameValue Remove a name-value pair from a list and return its value
-    value = {};
-    for i = numel(args)-1:-2:1
-        if (ischar(args{i}) || isstring(args{i})) && strcmpi(args{i}, name)
-            value = args(i+1);
-            args(i:i+1) = [];
-            return
-        end
+        message = string(ME.message);
     end
 end

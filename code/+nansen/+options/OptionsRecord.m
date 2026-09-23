@@ -18,146 +18,175 @@ classdef OptionsRecord
 %   MAT files, so they can be loaded without NANSEN, or written to JSON.
 %
 %   USAGE:
-%       [opts, record] = optionsManager.resolve('My profile');
+%       [opts, record] = optionsManager.resolve("My profile");
 %       ... run method ...
-%       S = record.toStruct();   % save alongside results
+%       record.writeJson(fullfile(outputFolder, "options.json"))
 %
-%       record = nansen.options.OptionsRecord.fromStruct(S);
+%       record = nansen.options.OptionsRecord.readJson(filePath);
 %       differences = record.compare(otherRecord)
 %
 %   See also nansen.options.Manager nansen.options.Provenance
 
-    properties
-        MethodName char = ''        % Name of method
-        ProfileName char = ''       % Name of profile the options were resolved from
-        SchemaVersion char = ''     % Version of options schema
-        Values = struct()           % Resolved values of all options
-        RuntimeOverrides = struct() % Values that were given at runtime
-        Sources = struct()          % Source of each value (same structure as Values)
-        Hash char = ''              % Fingerprint of (non-transient) values
-        Created char = ''           % Time of creation (ISO 8601)
-        MigrationLog = {}           % Migrations applied to saved values
-        Provenance = struct()       % See nansen.options.Provenance
+    properties (SetAccess = private)
+        MethodName (1,1) string = ""        % Name of method
+        ProfileName (1,1) string = ""       % Name of profile the options were resolved from
+        SchemaVersion (1,1) string = ""     % Version of options schema
+        Values (1,1) struct = struct()      % Resolved values of all options
+        RuntimeOverrides (1,1) struct = struct() % Values that were given at runtime
+        Sources (1,1) struct = struct()     % Source of each value (same structure as Values)
+        Hash (1,1) string = ""              % Fingerprint of (non-transient) values
+        Created (1,1) datetime = NaT("TimeZone", "UTC")
+        MigrationLog (1,:) string = string.empty(1, 0) % Migrations applied to saved values
+        Provenance nansen.options.Provenance {mustBeScalarOrEmpty} = nansen.options.Provenance.empty
     end
 
     properties (Constant, Hidden)
-        FORMAT_VERSION = '1.0'
+        FORMAT_VERSION = "1.0"
     end
 
     methods
         function S = toStruct(obj)
-        %toStruct Convert record to a plain struct (e.g. for saving)
+        %toStruct Convert record to a struct of plain values (e.g. for saving)
+            arguments
+                obj (1,1) nansen.options.OptionsRecord
+            end
             S = struct();
             S.FormatVersion = obj.FORMAT_VERSION;
-            names = getSavedPropertyNames();
-            for i = 1:numel(names)
-                S.(names{i}) = obj.(names{i});
+            S.MethodName = obj.MethodName;
+            S.ProfileName = obj.ProfileName;
+            S.SchemaVersion = obj.SchemaVersion;
+            S.Hash = obj.Hash;
+            S.Created = nansen.options.internal.formatTimestamp(obj.Created);
+            S.Values = obj.Values;
+            S.RuntimeOverrides = obj.RuntimeOverrides;
+            S.Sources = obj.Sources;
+            S.MigrationLog = obj.MigrationLog;
+            if ~isempty(obj.Provenance)
+                S.Provenance = obj.Provenance.toStruct();
             end
         end
 
         function writeJson(obj, filePath)
         %writeJson Write record to a JSON file
-            jsonStr = nansen.options.internal.jsonEncode(obj.toStruct());
-            fid = fopen(filePath, 'w', 'n', 'UTF-8');
-            if fid == -1
-                error('NANSEN:Options:FileError', 'Could not write to "%s"', filePath)
+            arguments
+                obj (1,1) nansen.options.OptionsRecord
+                filePath (1,1) string
             end
-            fprintf(fid, '%s', jsonStr);
-            fclose(fid);
+            writelines(nansen.options.internal.jsonEncode(obj.toStruct()), filePath)
         end
 
         function differences = compare(obj, other)
         %compare Compare values with another record (or struct of options)
         %
-        %   differences = record.compare(otherRecord) returns a struct
-        %   array with fields Name, ValueA, ValueB and Change for each
-        %   option value that differs.
-
-            if isa(other, 'nansen.options.OptionsRecord')
-                otherValues = other.Values;
-            else
-                otherValues = other;
+        %   differences = record.compare(otherRecord) returns a table with
+        %   variables Name, ValueA, ValueB and Change for each option value
+        %   that differs.
+            arguments
+                obj (1,1) nansen.options.OptionsRecord
+                other (1,1) {mustBeA(other, ["nansen.options.OptionsRecord", "struct"])}
             end
-            differences = nansen.options.internal.diffStruct(obj.Values, otherValues);
+            if isa(other, "nansen.options.OptionsRecord")
+                other = other.Values;
+            end
+            differences = nansen.options.internal.diffStruct(obj.Values, other);
         end
 
         function tf = isEquivalent(obj, other)
         %isEquivalent Check if two records have the same (non-transient) options
-            tf = strcmp(obj.MethodName, other.MethodName) && ...
-                ~isempty(obj.Hash) && strcmp(obj.Hash, other.Hash);
+            arguments
+                obj (1,1) nansen.options.OptionsRecord
+                other (1,1) nansen.options.OptionsRecord
+            end
+            tf = obj.MethodName == other.MethodName && ...
+                obj.Hash ~= "" && obj.Hash == other.Hash;
         end
 
         function source = getSource(obj, parameterName)
         %getSource Get where the value of a parameter came from
+        %
+        %   source = record.getSource(parameterName) returns "defaults",
+        %   "preset:<name>", "profile:<name>" or "runtime".
+            arguments
+                obj (1,1) nansen.options.OptionsRecord
+                parameterName (1,1) string
+            end
+            source = "";
             if nansen.options.internal.hasValue(obj.Sources, parameterName)
-                source = nansen.options.internal.getValue(obj.Sources, parameterName);
-            else
-                source = '';
+                source = string(nansen.options.internal.getValue(obj.Sources, parameterName));
             end
         end
     end
 
     methods (Static)
 
-        function obj = create(schema, values, varargin)
+        function obj = create(schema, values, options)
         %create Create a record for a resolved set of options
         %
-        %   record = nansen.options.OptionsRecord.create(schema, values, Name, Value)
+        %   record = nansen.options.OptionsRecord.create(schema, values, Name=Value)
         %
-        %   NAME-VALUE PAIRS:
+        %   NAME-VALUE ARGUMENTS:
         %       ProfileName       : Name of profile
         %       RuntimeOverrides  : Struct with values given at runtime
         %       Sources           : Struct with source of each value
-        %       MigrationLog      : Cell array of applied migrations
+        %       MigrationLog      : Migrations applied to saved values
         %       CaptureProvenance : Whether to capture provenance (default true)
-
-            params = struct('ProfileName', '', 'RuntimeOverrides', struct(), ...
-                'Sources', struct(), ...
-                'MigrationLog', {{}}, 'CaptureProvenance', true);
-            for i = 1:2:numel(varargin)
-                name = validatestring(char(varargin{i}), fieldnames(params));
-                params.(name) = varargin{i+1};
+            arguments
+                schema (1,1) nansen.options.Schema
+                values (1,1) struct
+                options.ProfileName (1,1) string = ""
+                options.RuntimeOverrides (1,1) struct = struct()
+                options.Sources (1,1) struct = struct()
+                options.MigrationLog (1,:) string = string.empty(1, 0)
+                options.CaptureProvenance (1,1) logical = true
             end
 
             obj = nansen.options.OptionsRecord();
             obj.MethodName = schema.Name;
-            obj.ProfileName = params.ProfileName;
+            obj.ProfileName = options.ProfileName;
             obj.SchemaVersion = schema.Version;
             obj.Values = values;
-            obj.RuntimeOverrides = params.RuntimeOverrides;
-            obj.Sources = params.Sources;
-            obj.MigrationLog = params.MigrationLog;
+            obj.RuntimeOverrides = options.RuntimeOverrides;
+            obj.Sources = options.Sources;
+            obj.MigrationLog = options.MigrationLog;
             obj.Hash = schema.computeHash(values);
-            obj.Created = nansen.options.internal.isoTimestamp();
+            obj.Created = datetime("now", "TimeZone", "UTC");
 
-            if params.CaptureProvenance
+            if options.CaptureProvenance
                 obj.Provenance = nansen.options.Provenance.capture( ...
-                    'MethodName', schema.Name, ...
-                    'Dependencies', schema.Dependencies);
+                    MethodName=schema.Name, Dependencies=schema.Dependencies);
             end
         end
 
         function obj = fromStruct(S)
         %fromStruct Create record from a struct (see toStruct)
+            arguments
+                S (1,1) struct
+            end
             obj = nansen.options.OptionsRecord();
-            names = getSavedPropertyNames();
-            for i = 1:numel(names)
-                if isfield(S, names{i})
-                    obj.(names{i}) = S.(names{i});
-                end
+            for name = ["MethodName", "ProfileName", "SchemaVersion", "Hash"]
+                if isfield(S, name); obj.(name) = string(S.(name)); end
+            end
+            for name = ["Values", "RuntimeOverrides", "Sources"]
+                if isfield(S, name); obj.(name) = S.(name); end
+            end
+            if isfield(S, "MigrationLog") && ~isempty(S.MigrationLog)
+                obj.MigrationLog = reshape(string(S.MigrationLog), 1, []);
+            end
+            if isfield(S, "Created")
+                obj.Created = nansen.options.internal.parseTimestamp(S.Created);
+            end
+            if isfield(S, "Provenance")
+                obj.Provenance = nansen.options.Provenance.fromStruct(S.Provenance);
             end
         end
 
         function obj = readJson(filePath)
         %readJson Read record from a JSON file
+            arguments
+                filePath (1,1) string {mustBeFile}
+            end
             S = nansen.options.internal.jsonDecode(fileread(filePath));
             obj = nansen.options.OptionsRecord.fromStruct(S);
         end
     end
-end
-
-function names = getSavedPropertyNames()
-    names = {'MethodName', 'ProfileName', 'SchemaVersion', 'Hash', ...
-        'Created', 'Values', 'RuntimeOverrides', 'Sources', ...
-        'MigrationLog', 'Provenance'};
 end

@@ -1,4 +1,4 @@
-classdef Schema < handle
+classdef Schema < handle & matlab.mixin.CustomDisplay
 %nansen.options.Schema Schema (definition) of the options for a method
 %
 %   A schema is the single source of truth for the options of a method:
@@ -8,20 +8,19 @@ classdef Schema < handle
 %   migrations (functions that upgrade saved options from older schema
 %   versions).
 %
-%   Schemas are defined in code, e.g. in a static method getOptionsSchema
-%   of a method class (see nansen.options.getSchema for conventions).
+%   Schemas are defined in code, in a static method getOptionsSchema of a
+%   method class (see nansen.options.getSchema).
 %
 %   USAGE:
-%       schema = nansen.options.Schema('my.package.myMethod', 'Version', '1.0.0');
+%       schema = nansen.options.Schema("my.package.MyMethod", Version="1.0.0");
 %
-%       schema.addParameter('Preprocessing.binSize', 5, ...
-%           'Description', 'Number of frames to bin', 'Min', 1, 'Integer', true)
-%       schema.addParameter('Preprocessing.method', 'mean', ...
-%           'Choices', {'mean', 'max'})
-%       schema.addParameter('Run.numWorkers', 4, 'Transient', true)
+%       schema.addParameter("Preprocessing.binSize", 5, ...
+%           Description="Number of frames to bin", Min=1, Integer=true)
+%       schema.addParameter("Preprocessing.method", "mean", ...
+%           Choices={"mean", "max"})
+%       schema.addParameter("Run.numWorkers", 4, Transient=true)
 %
-%       schema.addPreset('Fast', struct('Preprocessing', struct('binSize', 10)), ...
-%           'Heavy binning for quick previews')
+%       schema.addPreset("Fast", {"binSize", 10}, Description="Quick previews")
 %
 %       opts = schema.getDefaults();        % Struct with default values
 %       opts = schema.conform(opts);        % Validate / fill in missing
@@ -36,185 +35,244 @@ classdef Schema < handle
 %            nansen.options.getSchema
 
     properties
-        Name char = ''              % Name of method/function the schema belongs to
-        Version char = '1.0.0'      % Semantic version of the schema
-        Title char = ''             % Human readable title
-        Description char = ''       % Description of method/options
-        Dependencies cell = {}      % Names of functions/classes from external toolboxes whose versions should be recorded in provenance
+        Name (1,1) string = ""              % Name of method the schema belongs to
+        Version (1,1) string {nansen.options.internal.mustBeVersion} = "1.0.0"
+        Title (1,1) string = ""             % Human readable title
+        Description (1,1) string = ""       % Description of method/options
+        Dependencies (1,:) string = string.empty(1, 0) % Functions/classes of external toolboxes whose versions are recorded in provenance
     end
 
     properties (SetAccess = private)
-        Presets = struct('Name', {}, 'Description', {}, 'Overrides', {})
-        Migrations = struct('FromVersion', {}, 'ToVersion', {}, ...
-            'Function', {}, 'Description', {})
-        GroupDescriptions = struct('Name', {}, 'Description', {})
-        IsInferred logical = false  % True if schema was inferred from a legacy struct of options
+        Parameters (1,:) nansen.options.Parameter = nansen.options.Parameter.empty(1, 0)
+        Presets (1,:) nansen.options.Profile = nansen.options.Profile.empty(1, 0)
+        Migrations (1,:) nansen.options.Migration = nansen.options.Migration.empty(1, 0)
+        GroupDescriptions (1,1) struct = struct()   % Descriptions of groups (nested like options)
+        IsInferred (1,1) logical = false    % True if inferred from a legacy options definition
     end
 
-    properties (Dependent)
-        Parameters                  % Array of parameters (nansen.options.Parameter)
-        ParameterNames              % Names of all parameters
-        PresetNames                 % Names of all presets
-        NumParameters               % Number of parameters
+    properties (Dependent, SetAccess = private)
+        ParameterNames (1,:) string         % Names of all parameters
+        PresetNames (1,:) string            % Names of all presets
+        GroupNames (1,:) string             % Names of top level groups
+        DisplayTitle (1,1) string           % Title, or name of method
     end
 
     properties (Constant)
-        DEFAULTS_PROFILE_NAME = 'Defaults' % Reserved name for the defaults of a schema
-    end
-
-    properties (Access = private)
-        ParameterList = {}          % Cell array of parameters
+        DEFAULTS_NAME = "Defaults"          % Reserved name for the defaults of a schema
     end
 
     methods % Constructor
-        function obj = Schema(name, varargin)
+        function obj = Schema(name, options)
         %Schema Create a new, empty options schema
         %
-        %   schema = nansen.options.Schema(name, Name, Value, ...)
+        %   schema = nansen.options.Schema(name, Name=Value, ...)
         %
-        %   Name-value pairs: Version, Title, Description, Dependencies
-
-            if nargin < 1; return; end
-            obj.Name = char(name);
-
-            for i = 1:2:numel(varargin)
-                propertyName = validatestring(char(varargin{i}), ...
-                    {'Version', 'Title', 'Description', 'Dependencies'});
-                obj.(propertyName) = varargin{i+1};
+        %   Name-value arguments: Version, Title, Description, Dependencies
+            arguments
+                name (1,1) string = ""
+                options.Version (1,1) string {nansen.options.internal.mustBeVersion} = "1.0.0"
+                options.Title (1,1) string = ""
+                options.Description (1,1) string = ""
+                options.Dependencies (1,:) string = string.empty(1, 0)
             end
+
+            obj.Name = name;
+            obj.Version = options.Version;
+            obj.Title = options.Title;
+            obj.Description = options.Description;
+            obj.Dependencies = options.Dependencies;
         end
     end
 
-    methods % Define parameters
+    methods % Define parameters, presets and migrations
 
-        function parameter = addParameter(obj, name, defaultValue, varargin)
+        function parameter = addParameter(obj, name, defaultValue, attributes)
         %addParameter Add a parameter to the schema
         %
-        %   schema.addParameter(name, defaultValue, Name, Value, ...) adds a
+        %   schema.addParameter(name, defaultValue, Name=Value, ...) adds a
         %   parameter. Use dotted names for parameters in a group, e.g.
-        %   'Group.name'. See nansen.options.Parameter for available
-        %   name-value pairs (Description, Units, Choices, Min, Max, ...)
+        %   "Group.name". See nansen.options.Parameter for available
+        %   attributes (Description, Units, Choices, Min, Max, ...)
 
-            name = char(name);
+            arguments
+                obj (1,1) nansen.options.Schema
+                name (1,1) string
+                defaultValue
+                attributes.?nansen.options.Parameter
+            end
 
             if obj.hasParameter(name)
-                error('NANSEN:Options:DuplicateParameter', ...
-                    'Parameter "%s" already exists in schema', name)
+                error("NANSEN:Options:DuplicateParameter", ...
+                    "Parameter ""%s"" already exists in schema", name)
             end
 
             existingNames = obj.ParameterNames;
-            isConflict = strncmp(existingNames, [name, '.'], numel(name)+1) | ...
-                cellfun(@(n) strncmp(name, [n, '.'], numel(n)+1), existingNames);
+            isConflict = startsWith(existingNames, name + ".") | ...
+                arrayfun(@(n) startsWith(name, n + "."), existingNames);
             if any(isConflict)
-                error('NANSEN:Options:DuplicateParameter', ...
-                    'Parameter "%s" conflicts with existing parameter "%s"', ...
-                    name, existingNames{find(isConflict, 1)})
+                error("NANSEN:Options:DuplicateParameter", ...
+                    "Parameter ""%s"" conflicts with existing parameter ""%s""", ...
+                    name, existingNames(find(isConflict, 1)))
             end
 
-            parameter = nansen.options.Parameter(name, defaultValue, varargin{:});
-            obj.ParameterList{end+1} = parameter;
+            attributeArgs = namedargs2cell(attributes);
+            parameter = nansen.options.Parameter(name, defaultValue, attributeArgs{:});
+            obj.Parameters(end+1) = parameter;
 
             if ~nargout; clear parameter; end
         end
 
         function removeParameter(obj, name)
         %removeParameter Remove a parameter from the schema
-            idx = obj.getParameterIndex(name);
-            obj.ParameterList(idx) = [];
+            arguments
+                obj (1,1) nansen.options.Schema
+                name (1,1) string
+            end
+            obj.Parameters(obj.getParameterIndex(name)) = [];
         end
 
-        function modifyParameter(obj, name, varargin)
+        function modifyParameter(obj, name, attributes)
         %modifyParameter Modify attributes (incl. Default) of a parameter
         %
-        %   schema.modifyParameter(name, Name, Value, ...)
+        %   schema.modifyParameter(name, Name=Value, ...)
         %
         %   Example:
-        %       schema.modifyParameter('binSize', 'Default', 10, 'Max', 50)
+        %       schema.modifyParameter("binSize", Default=10, Max=50)
+
+            arguments
+                obj (1,1) nansen.options.Schema
+                name (1,1) string
+                attributes.?nansen.options.Parameter
+            end
 
             idx = obj.getParameterIndex(name);
-            obj.ParameterList{idx} = obj.ParameterList{idx}.modify(varargin{:});
+            attributeArgs = namedargs2cell(attributes);
+            obj.Parameters(idx) = obj.Parameters(idx).modify(attributeArgs{:});
         end
 
         function setDefault(obj, name, value)
         %setDefault Set default value of a parameter
-            obj.modifyParameter(name, 'Default', value)
+            arguments
+                obj (1,1) nansen.options.Schema
+                name (1,1) string
+                value
+            end
+            obj.modifyParameter(name, Default=value)
         end
 
         function setGroupDescription(obj, groupName, description)
         %setGroupDescription Set description for a group of parameters
-            idx = find(strcmp({obj.GroupDescriptions.Name}, groupName));
-            if isempty(idx); idx = numel(obj.GroupDescriptions) + 1; end
-            obj.GroupDescriptions(idx).Name = char(groupName);
-            obj.GroupDescriptions(idx).Description = char(description);
+            arguments
+                obj (1,1) nansen.options.Schema
+                groupName (1,1) string
+                description (1,1) string
+            end
+            obj.GroupDescriptions = nansen.options.internal.setValue( ...
+                obj.GroupDescriptions, groupName, description);
         end
 
-        function addPreset(obj, name, overrides, description)
+        function description = getGroupDescription(obj, groupName)
+        %getGroupDescription Get description of a group of parameters
+            arguments
+                obj (1,1) nansen.options.Schema
+                groupName (1,1) string
+            end
+            description = "";
+            if nansen.options.internal.hasValue(obj.GroupDescriptions, groupName)
+                value = nansen.options.internal.getValue(obj.GroupDescriptions, groupName);
+                if isstring(value); description = value; end
+            end
+        end
+
+        function addPreset(obj, name, overrides, options)
         %addPreset Add a preset (named set of values) to the schema
         %
         %   schema.addPreset(name, overrides) adds a preset. overrides is a
         %   (partial) nested struct with values that differ from defaults,
-        %   or a cell array of name-value pairs with dotted names.
+        %   or a cell array of name-value pairs (short or dotted names).
         %
-        %   schema.addPreset(name, overrides, description)
+        %   schema.addPreset(name, overrides, Description=text)
 
-            if nargin < 4; description = ''; end
-            name = char(name);
+            arguments
+                obj (1,1) nansen.options.Schema
+                name (1,1) string {mustBeNonzeroLengthText}
+                overrides {mustBeA(overrides, ["struct", "cell"])} = struct()
+                options.Description (1,1) string = ""
+            end
 
-            if strcmpi(name, obj.DEFAULTS_PROFILE_NAME)
-                error('NANSEN:Options:ReservedName', ...
-                    '"%s" is a reserved name', name)
+            if strcmpi(name, obj.DEFAULTS_NAME)
+                error("NANSEN:Options:ReservedName", """%s"" is a reserved name", name)
             elseif obj.hasPreset(name)
-                error('NANSEN:Options:DuplicatePreset', ...
-                    'A preset named "%s" already exists', name)
+                error("NANSEN:Options:DuplicatePreset", ...
+                    "A preset named ""%s"" already exists", name)
             end
 
             overrides = obj.parseOverrides(overrides);
+            obj.applyOverrides(obj.getDefaults(), overrides); % Validates values
 
-            % Validate values of the preset
-            obj.applyOverrides(obj.getDefaults(), overrides);
-
-            obj.Presets(end+1) = struct('Name', name, ...
-                'Description', char(description), 'Overrides', overrides);
+            obj.Presets(end+1) = nansen.options.Profile(name, ...
+                Type=nansen.options.ProfileType.Preset, ...
+                MethodName=obj.Name, ...
+                Description=options.Description, ...
+                Overrides=overrides, ...
+                SchemaVersion=obj.Version);
         end
 
-        function addMigration(obj, fromVersion, toVersion, migrationFcn, description)
+        function addMigration(obj, fromVersion, toVersion, migrationFcn, options)
         %addMigration Add a function that migrates options between versions
         %
         %   schema.addMigration(fromVersion, toVersion, migrationFcn)
         %   registers a function which converts options from one version of
-        %   the schema to a later version. The function receives a struct
-        %   of options, and must return the converted struct.
-        %
-        %   Note: The struct can be partial (e.g. only values of a profile
-        %   that differ from defaults), so migration functions should only
-        %   modify fields that are present. See nansen.options.migrate for
-        %   helper functions.
+        %   the schema to a later version. See nansen.options.Migration.
         %
         %   Example:
-        %       schema.addMigration('1.0.0', '1.1.0', ...
-        %           @(S) nansen.options.migrate.renameField(S, 'binSize', 'Preprocessing.binSize'))
+        %       schema.addMigration("1.0.0", "2.0.0", ...
+        %           @(S) nansen.options.migrate.renameField(S, "binSize", "Preprocessing.binSize"), ...
+        %           Description="Moved binSize to Preprocessing")
 
-            if nargin < 5; description = ''; end
+            arguments
+                obj (1,1) nansen.options.Schema
+                fromVersion (1,1) string
+                toVersion (1,1) string
+                migrationFcn (1,1) function_handle
+                options.Description (1,1) string = ""
+            end
 
-            assert(isa(migrationFcn, 'function_handle'), ...
-                'NANSEN:Options:InvalidInput', 'Migration must be a function handle')
-            assert(nansen.options.internal.compareVersions(toVersion, fromVersion) > 0, ...
-                'NANSEN:Options:InvalidInput', 'toVersion must be greater than fromVersion')
-
-            obj.Migrations(end+1) = struct('FromVersion', char(fromVersion), ...
-                'ToVersion', char(toVersion), 'Function', migrationFcn, ...
-                'Description', char(description));
+            obj.Migrations(end+1) = nansen.options.Migration(fromVersion, ...
+                toVersion, migrationFcn, Description=options.Description);
         end
     end
 
-    methods % Query parameters
+    methods % Query parameters and presets
 
         function tf = hasParameter(obj, name)
-            tf = any(strcmp(obj.ParameterNames, name));
+            arguments
+                obj (1,1) nansen.options.Schema
+                name (1,1) string
+            end
+            tf = any(obj.ParameterNames == name);
         end
 
         function parameter = getParameter(obj, name)
-            parameter = obj.ParameterList{obj.getParameterIndex(name)};
+        %getParameter Get parameter by (full or unique short) name
+            arguments
+                obj (1,1) nansen.options.Schema
+                name (1,1) string
+            end
+            parameter = obj.Parameters(obj.getParameterIndex(name));
+        end
+
+        function parameters = getGroupParameters(obj, groupName)
+        %getGroupParameters Get all parameters in a group (incl. subgroups)
+            arguments
+                obj (1,1) nansen.options.Schema
+                groupName (1,1) string
+            end
+            if groupName == ""
+                parameters = obj.Parameters(~contains(obj.ParameterNames, "."));
+            else
+                parameters = obj.Parameters(startsWith(obj.ParameterNames, groupName + "."));
+            end
         end
 
         function fullName = resolveName(obj, name)
@@ -222,45 +280,51 @@ classdef Schema < handle
         %
         %   fullName = schema.resolveName(name) returns the full (dotted)
         %   name of a parameter. If name is not a full name, it is matched
-        %   against names without group (e.g. 'binSize' matches
-        %   'Preprocessing.binSize') if the match is unique.
+        %   against the end of full names (e.g. "binSize" matches
+        %   "Preprocessing.binSize") if the match is unique.
 
-            name = char(name);
-            if obj.hasParameter(name)
+            arguments
+                obj (1,1) nansen.options.Schema
+                name (1,1) string
+            end
+
+            allNames = obj.ParameterNames;
+            if any(allNames == name)
                 fullName = name; return
             end
 
-            shortNames = cellfun(@(p) p.ShortName, obj.ParameterList, 'UniformOutput', false);
-            isMatch = strcmp(shortNames, name);
-
-            % Also match partial paths, i.e 'B.c' for 'A.B.c'
-            if ~any(isMatch)
-                isMatch = cellfun(@(n) numel(n) > numel(name) && ...
-                    strcmp(n(end-numel(name):end), ['.', name]), obj.ParameterNames);
-            end
+            isMatch = endsWith(allNames, "." + name);
 
             if sum(isMatch) == 1
-                fullName = obj.ParameterList{isMatch}.Name;
+                fullName = allNames(isMatch);
             elseif sum(isMatch) > 1
-                error('NANSEN:Options:AmbiguousName', ...
-                    'Parameter name "%s" is ambiguous. Matches: %s', ...
-                    name, strjoin(obj.ParameterNames(isMatch), ', '))
+                error("NANSEN:Options:AmbiguousName", ...
+                    "Parameter name ""%s"" is ambiguous. Matches: %s", ...
+                    name, strjoin(allNames(isMatch), ", "))
             else
-                error('NANSEN:Options:UnknownParameter', ...
-                    'Schema "%s" has no parameter named "%s"', obj.Name, name)
+                error("NANSEN:Options:UnknownParameter", ...
+                    "Schema ""%s"" has no parameter named ""%s""", obj.Name, name)
             end
         end
 
         function tf = hasPreset(obj, name)
-            tf = any(strcmp(obj.PresetNames, name));
+            arguments
+                obj (1,1) nansen.options.Schema
+                name (1,1) string
+            end
+            tf = any(obj.PresetNames == name);
         end
 
         function preset = getPreset(obj, name)
-        %getPreset Get preset (struct with Name, Description and Overrides)
-            isMatch = strcmp(obj.PresetNames, name);
+        %getPreset Get a preset (as a nansen.options.Profile)
+            arguments
+                obj (1,1) nansen.options.Schema
+                name (1,1) string
+            end
+            isMatch = obj.PresetNames == name;
             if ~any(isMatch)
-                error('NANSEN:Options:PresetNotFound', ...
-                    'Schema "%s" has no preset named "%s"', obj.Name, name)
+                error("NANSEN:Options:PresetNotFound", ...
+                    "Schema ""%s"" has no preset named ""%s""", obj.Name, name)
             end
             preset = obj.Presets(isMatch);
         end
@@ -270,15 +334,21 @@ classdef Schema < handle
 
         function S = getDefaults(obj)
         %getDefaults Get struct with the default values of all parameters
+            arguments
+                obj (1,1) nansen.options.Schema
+            end
             S = struct();
-            for i = 1:numel(obj.ParameterList)
-                S = nansen.options.internal.setValue(S, ...
-                    obj.ParameterList{i}.Name, obj.ParameterList{i}.Default);
+            for parameter = obj.Parameters
+                S = nansen.options.internal.setValue(S, parameter.Name, parameter.Default);
             end
         end
 
         function S = getPresetValues(obj, presetName)
         %getPresetValues Get all values (defaults + overrides) of a preset
+            arguments
+                obj (1,1) nansen.options.Schema
+                presetName (1,1) string
+            end
             preset = obj.getPreset(presetName);
             S = obj.applyOverrides(obj.getDefaults(), preset.Overrides);
         end
@@ -286,31 +356,30 @@ classdef Schema < handle
         function overrides = parseOverrides(obj, overrides)
         %parseOverrides Convert overrides to a nested struct with full names
         %
-        %   Overrides can be given as a (nested) struct or as a cell array
-        %   of name-value pairs. Short names are resolved to full names.
+        %   Overrides can be given as a (nested, partial) struct or as a
+        %   cell array of name-value pairs. Short names are resolved to
+        %   full names.
 
-            if isempty(overrides)
-                overrides = struct(); return
+            arguments
+                obj (1,1) nansen.options.Schema
+                overrides {mustBeA(overrides, ["struct", "cell"])}
             end
 
             if iscell(overrides)
-                assert(mod(numel(overrides), 2) == 0, ...
-                    'NANSEN:Options:InvalidInput', ...
-                    'Overrides must be given as name-value pairs')
-                names = cellfun(@char, overrides(1:2:end), 'UniformOutput', false);
+                if mod(numel(overrides), 2) ~= 0
+                    error("NANSEN:Options:InvalidInput", ...
+                        "Overrides must be given as name-value pairs")
+                end
+                names = string(overrides(1:2:end));
                 values = overrides(2:2:end);
-            elseif isstruct(overrides)
-                overrides = obj.removeEditorConfigFields(overrides);
-                [names, values] = nansen.options.internal.flattenStruct(overrides);
             else
-                error('NANSEN:Options:InvalidInput', ...
-                    'Overrides must be a struct or a cell array of name-value pairs')
+                [names, values] = nansen.options.internal.flattenStruct(overrides);
             end
 
             overrides = struct();
             for i = 1:numel(names)
-                fullName = obj.resolveName(names{i});
-                overrides = nansen.options.internal.setValue(overrides, fullName, values{i});
+                overrides = nansen.options.internal.setValue(overrides, ...
+                    obj.resolveName(names(i)), values{i});
             end
         end
 
@@ -321,18 +390,24 @@ classdef Schema < handle
         %   nested struct (can be partial) or a cell array of name-value
         %   pairs. Throws an error if any value is invalid.
 
-            overrides = obj.parseOverrides(overrides);
-            [names, values] = nansen.options.internal.flattenStruct(overrides);
+            arguments
+                obj (1,1) nansen.options.Schema
+                S (1,1) struct
+                overrides {mustBeA(overrides, ["struct", "cell"])}
+            end
+
+            [names, values] = nansen.options.internal.flattenStruct( ...
+                obj.parseOverrides(overrides));
 
             for i = 1:numel(names)
-                parameter = obj.getParameter(names{i});
+                parameter = obj.getParameter(names(i));
                 value = parameter.coerce(values{i});
                 [isValid, message] = parameter.validate(value);
                 if ~isValid
-                    error('NANSEN:Options:InvalidValue', ...
-                        'Invalid value for "%s": %s', names{i}, message)
+                    error("NANSEN:Options:InvalidValue", ...
+                        "Invalid value for ""%s"": %s", names(i), message)
                 end
-                S = nansen.options.internal.setValue(S, names{i}, value);
+                S = nansen.options.internal.setValue(S, names(i), value);
             end
         end
 
@@ -340,39 +415,37 @@ classdef Schema < handle
         %validate Validate a struct of options against the schema
         %
         %   [isValid, issues] = schema.validate(S) returns true if S is
-        %   valid. issues is a struct array with fields Name, Type
-        %   ('missing', 'unknown' or 'invalid') and Message.
+        %   valid. issues is a table with variables Name, Issue ("missing",
+        %   "unknown" or "invalid") and Message.
 
-            issues = struct('Name', {}, 'Type', {}, 'Message', {});
+            arguments
+                obj (1,1) nansen.options.Schema
+                S (1,1) struct
+            end
 
-            S = obj.removeEditorConfigFields(S);
             [names, values] = nansen.options.internal.flattenStruct(S);
+            issues = createIssuesTable();
 
-            for i = 1:numel(obj.ParameterList)
-                parameter = obj.ParameterList{i};
+            for parameter = obj.Parameters
                 [isPresent, idx] = ismember(parameter.Name, names);
                 if ~isPresent
-                    issues(end+1) = struct('Name', parameter.Name, ...
-                        'Type', 'missing', 'Message', 'Parameter is missing'); %#ok<AGROW>
+                    issues(end+1, :) = {parameter.Name, "missing", "Parameter is missing"}; %#ok<AGROW>
                 else
-                    [isParamValid, message] = parameter.validate(values{idx});
-                    if ~isParamValid
-                        issues(end+1) = struct('Name', parameter.Name, ...
-                            'Type', 'invalid', 'Message', message); %#ok<AGROW>
+                    [isParameterValid, message] = parameter.validate(values{idx});
+                    if ~isParameterValid
+                        issues(end+1, :) = {parameter.Name, "invalid", message}; %#ok<AGROW>
                     end
                 end
             end
 
-            unknownNames = setdiff(names, obj.ParameterNames, 'stable');
-            for i = 1:numel(unknownNames)
-                issues(end+1) = struct('Name', unknownNames{i}, ...
-                    'Type', 'unknown', 'Message', 'Parameter is not part of schema'); %#ok<AGROW>
+            for name = setdiff(names, obj.ParameterNames, "stable")
+                issues(end+1, :) = {name, "unknown", "Parameter is not part of schema"}; %#ok<AGROW>
             end
 
             isValid = isempty(issues);
         end
 
-        function [S, issues] = conform(obj, S, varargin)
+        function [S, issues] = conform(obj, S, options)
         %conform Make a struct of options conform to the schema
         %
         %   S = schema.conform(S) converts values to the expected class and
@@ -380,67 +453,67 @@ classdef Schema < handle
         %   validates all values. An error is thrown if any values are
         %   invalid or if S contains fields that are not in the schema.
         %
-        %   [S, issues] = schema.conform(S, Name, Value)
+        %   [S, issues] = schema.conform(S, Name=Value)
         %
-        %   NAME-VALUE PAIRS:
+        %   NAME-VALUE ARGUMENTS:
         %       Unknown : How to handle fields not in the schema:
-        %                 'error' (default), 'warn' (and drop), 'drop' or 'keep'
+        %                 "error" (default), "warn" (and drop), "drop" or "keep"
         %       Missing : How to handle missing parameters:
-        %                 'fill' (default, use default value) or 'error'
+        %                 "fill" (default, use default value) or "error"
 
-            params = struct('Unknown', 'error', 'Missing', 'fill');
-            params = parseNameValuePairs(params, varargin{:});
+            arguments
+                obj (1,1) nansen.options.Schema
+                S (1,1) struct
+                options.Unknown (1,1) string {mustBeMember(options.Unknown, ["error", "warn", "drop", "keep"])} = "error"
+                options.Missing (1,1) string {mustBeMember(options.Missing, ["fill", "error"])} = "fill"
+            end
 
-            if isempty(S); S = struct(); end
-            S = obj.removeEditorConfigFields(S);
             [names, values] = nansen.options.internal.flattenStruct(S);
 
             conformed = struct();
-            issues = struct('Name', {}, 'Type', {}, 'Message', {});
+            issues = createIssuesTable();
 
-            for i = 1:numel(obj.ParameterList)
-                parameter = obj.ParameterList{i};
+            for parameter = obj.Parameters
                 [isPresent, idx] = ismember(parameter.Name, names);
 
                 if isPresent
                     value = parameter.coerce(values{idx});
                     [isValid, message] = parameter.validate(value);
                     if ~isValid
-                        error('NANSEN:Options:InvalidValue', ...
-                            'Invalid value for "%s": %s', parameter.Name, message)
+                        error("NANSEN:Options:InvalidValue", ...
+                            "Invalid value for ""%s"": %s", parameter.Name, message)
                     end
-                elseif strcmp(params.Missing, 'error')
-                    error('NANSEN:Options:MissingValue', ...
-                        'Missing value for parameter "%s"', parameter.Name)
+                elseif options.Missing == "error"
+                    error("NANSEN:Options:MissingValue", ...
+                        "Missing value for parameter ""%s""", parameter.Name)
                 else
                     value = parameter.Default;
-                    issues(end+1) = struct('Name', parameter.Name, 'Type', 'missing', ...
-                        'Message', 'Filled in with default value'); %#ok<AGROW>
+                    issues(end+1, :) = {parameter.Name, "missing", ...
+                        "Filled in with default value"}; %#ok<AGROW>
                 end
                 conformed = nansen.options.internal.setValue(conformed, parameter.Name, value);
             end
 
-            unknownNames = setdiff(names, obj.ParameterNames, 'stable');
+            unknownNames = setdiff(names, obj.ParameterNames, "stable");
             if ~isempty(unknownNames)
-                for i = 1:numel(unknownNames)
-                    issues(end+1) = struct('Name', unknownNames{i}, 'Type', 'unknown', ...
-                        'Message', 'Parameter is not part of schema'); %#ok<AGROW>
+                for name = unknownNames
+                    issues(end+1, :) = {name, "unknown", "Parameter is not part of schema"}; %#ok<AGROW>
                 end
 
-                switch params.Unknown
-                    case 'error'
-                        error('NANSEN:Options:UnknownParameter', ...
-                            'Options contain parameters that are not part of the schema "%s": %s', ...
-                            obj.Name, strjoin(unknownNames, ', '))
-                    case 'warn'
-                        warning('NANSEN:Options:UnknownParameter', ...
-                            'Ignoring parameters that are not part of the schema "%s": %s', ...
-                            obj.Name, strjoin(unknownNames, ', '))
-                    case 'keep'
+                switch options.Unknown
+                    case "error"
+                        error("NANSEN:Options:UnknownParameter", ...
+                            "Options contain parameters that are not part of the schema ""%s"": %s", ...
+                            obj.Name, strjoin(unknownNames, ", "))
+                    case "warn"
+                        warning("NANSEN:Options:UnknownParameter", ...
+                            "Ignoring parameters that are not part of the schema ""%s"": %s", ...
+                            obj.Name, strjoin(unknownNames, ", "))
+                    case "keep"
                         [~, idx] = ismember(unknownNames, names);
                         for i = 1:numel(unknownNames)
                             conformed = nansen.options.internal.setValue( ...
-                                conformed, unknownNames{i}, values{idx(i)});
+                                conformed, unknownNames(i), values{idx(i)});
                         end
                 end
             end
@@ -453,46 +526,55 @@ classdef Schema < handle
         %
         %   [S, migrationLog] = schema.migrate(S, fromVersion) applies all
         %   registered migrations from fromVersion up to the current schema
-        %   version. migrationLog is a cell array of text describing the
-        %   applied migrations.
+        %   version. migrationLog is a string array describing the applied
+        %   migrations.
 
-            migrationLog = {};
-            currentVersion = char(fromVersion);
+            arguments
+                obj (1,1) nansen.options.Schema
+                S (1,1) struct
+                fromVersion (1,1) string
+            end
+
+            migrationLog = string.empty(1, 0);
+            currentVersion = fromVersion;
             compare = @nansen.options.internal.compareVersions;
 
             if compare(currentVersion, obj.Version) > 0
-                warning('NANSEN:Options:NewerVersion', ...
-                    ['Options were created with a newer version (%s) of ', ...
-                    'the schema for "%s" than the current version (%s)'], ...
+                warning("NANSEN:Options:NewerVersion", ...
+                    "Options were created with a newer version (%s) of " + ...
+                    "the schema for ""%s"" than the current version (%s)", ...
                     currentVersion, obj.Name, obj.Version)
                 return
             end
 
             while compare(currentVersion, obj.Version) < 0
-                % Find the migration which starts at the current version
-                % (or the closest earlier version)
-                candidates = find(arrayfun(@(m) compare(m.FromVersion, currentVersion) <= 0 ...
-                    && compare(m.ToVersion, currentVersion) > 0, obj.Migrations));
+                % Find the migration which applies to the current version,
+                % i.e. starts at or before it and ends after it. If there
+                % are several, use the one with the smallest step.
+                isCandidate = arrayfun(@(m) compare(m.FromVersion, currentVersion) <= 0 ...
+                    && compare(m.ToVersion, currentVersion) > 0, obj.Migrations);
+                candidates = obj.Migrations(isCandidate);
 
                 if isempty(candidates); break; end
 
-                [~, order] = sort(arrayfun(@(m) compare(m.ToVersion, currentVersion), ...
-                    obj.Migrations(candidates)));
-                migration = obj.Migrations(candidates(order(1)));
+                isSmallest = arrayfun(@(m) all(arrayfun(@(c) ...
+                    compare(m.ToVersion, c.ToVersion) <= 0, candidates)), candidates);
+                migration = candidates(find(isSmallest, 1));
 
-                S = migration.Function(S);
-                migrationLog{end+1} = sprintf('%s -> %s: %s', migration.FromVersion, ...
-                    migration.ToVersion, migration.Description); %#ok<AGROW>
+                S = migration.apply(S);
+                migrationLog(end+1) = migration.describe(); %#ok<AGROW>
                 currentVersion = migration.ToVersion;
             end
         end
 
         function S = getHashableValues(obj, S)
         %getHashableValues Remove transient parameters from options
-            for i = 1:numel(obj.ParameterList)
-                if obj.ParameterList{i}.Transient
-                    S = nansen.options.internal.removeValue(S, obj.ParameterList{i}.Name);
-                end
+            arguments
+                obj (1,1) nansen.options.Schema
+                S (1,1) struct
+            end
+            for parameter = obj.Parameters([obj.Parameters.Transient])
+                S = nansen.options.internal.removeValue(S, parameter.Name);
             end
         end
 
@@ -502,72 +584,49 @@ classdef Schema < handle
         %   The hash is computed from the method name and the values of
         %   all non-transient parameters. Two runs of a method with the
         %   same hash used the same configuration.
-
-            S = obj.getHashableValues(S);
+            arguments
+                obj (1,1) nansen.options.Schema
+                S (1,1) struct
+            end
             hash = nansen.options.internal.computeHash( ...
-                struct('Method', obj.Name, 'Options', S) );
+                struct("Method", obj.Name, "Options", obj.getHashableValues(S)) );
         end
 
         function hash = getDefaultsHash(obj)
-        %getDefaultsHash Get hash of default values
-        %
-        %   Used to detect whether default values have changed.
+        %getDefaultsHash Get hash of default values (to detect changes)
+            arguments
+                obj (1,1) nansen.options.Schema
+            end
             hash = nansen.options.internal.computeHash(obj.getDefaults());
         end
     end
 
-    methods % Conversion
+    methods % Documentation and export
 
-        function S = toEditorStruct(obj, S, includeAdvanced)
-        %toEditorStruct Create struct for editing in the structeditor app
-        %
-        %   S = schema.toEditorStruct(S) adds configuration fields
-        %   (fieldname_) which the structeditor app uses to show dropdowns,
-        %   sliders, file browsers etc. S defaults to the default values.
-        %
-        %   This is also the format expected by the legacy
-        %   nansen.manage.OptionsManager.
-
-            if nargin < 2 || isempty(S); S = obj.getDefaults(); end
-            if nargin < 3; includeAdvanced = true; end
-
-            for i = 1:numel(obj.ParameterList)
-                parameter = obj.ParameterList{i};
-                config = parameter.getEditorConfig();
-
-                if parameter.Advanced && ~includeAdvanced
-                    config = 'internal';
-                end
-
-                if ~isempty(config)
-                    S = nansen.options.internal.setValue(S, [parameter.Name, '_'], config);
-                end
-            end
-        end
-
-        function S = fromEditorStruct(obj, S)
-        %fromEditorStruct Remove configuration fields and conform
-            S = obj.conform(obj.removeEditorConfigFields(S));
-        end
-
-        function T = toTable(obj, includeInternal)
+        function T = toTable(obj, options)
         %toTable Get a table with an overview of all parameters
-
-            if nargin < 2; includeInternal = false; end
-
-            parameters = reshape(obj.ParameterList, [], 1);
-            if ~includeInternal
-                parameters = parameters(~cellfun(@(p) p.Internal, parameters));
+        %
+        %   T = schema.toTable(IncludeInternal=false)
+            arguments
+                obj (1,1) nansen.options.Schema
+                options.IncludeInternal (1,1) logical = false
             end
 
-            getAttribute = @(name) cellfun(@(p) p.(name), parameters, 'UniformOutput', false);
+            parameters = obj.Parameters;
+            if ~options.IncludeInternal
+                parameters = parameters(~[parameters.Internal]);
+            end
 
-            Name = getAttribute('Name');
-            Default = cellfun(@(p) nansen.options.internal.valueToString(p.Default), ...
-                parameters, 'UniformOutput', false);
-            Type = getAttribute('Type');
-            Units = getAttribute('Units');
-            Description = getAttribute('Description');
+            Name = [string.empty(0, 1); parameters.Name];
+            Default = string(arrayfun(@(p) nansen.options.internal.valueToString(p.Default), ...
+                parameters(:), UniformOutput=false));
+            Type = [nansen.options.ParameterType.empty(0, 1); parameters.Type];
+            Units = [string.empty(0, 1); parameters.Units];
+            Description = [string.empty(0, 1); parameters.Description];
+
+            if isempty(parameters)
+                Default = string.empty(0, 1);
+            end
 
             T = table(Name, Default, Type, Units, Description);
         end
@@ -575,272 +634,121 @@ classdef Schema < handle
         function S = toJsonSchema(obj)
         %toJsonSchema Get a JSON Schema (https://json-schema.org) description
         %
-        %   The returned containers.Map can be written to file with
-        %   jsonencode, or use schema.writeJsonSchema(filePath). This
-        %   makes the options understandable by other tools (e.g. Python).
-
-            S = containers.Map();
-            S('$schema') = 'https://json-schema.org/draft/2020-12/schema';
-            S('$id') = obj.Name;
-            S('title') = obj.getDisplayTitle();
-            if ~isempty(obj.Description); S('description') = obj.Description; end
-            S('version') = obj.Version;
-            S('type') = 'object';
+        %   The returned struct can be written to file with jsonencode, or
+        %   use schema.writeJsonSchema(filePath). This makes the options
+        %   understandable by other tools and languages (e.g. Python).
+            arguments
+                obj (1,1) nansen.options.Schema
+            end
 
             propertyStruct = struct();
-            for i = 1:numel(obj.ParameterList)
-                parameter = obj.ParameterList{i};
+            for parameter = obj.Parameters
                 propertyStruct = addJsonSchemaProperty(propertyStruct, ...
-                    strsplit(parameter.Name, '.'), parameter.toJsonSchema());
+                    split(parameter.Name, ".")', parameter.toJsonSchema());
             end
-            S('properties') = propertyStruct;
+
+            % Use a dictionary-like map to allow keys like "$schema"
+            S = containers.Map();
+            S("$schema") = "https://json-schema.org/draft/2020-12/schema";
+            S("$id") = obj.Name;
+            S("title") = obj.DisplayTitle;
+            if obj.Description ~= ""; S("description") = obj.Description; end
+            S("version") = obj.Version;
+            S("type") = "object";
+            S("properties") = propertyStruct;
         end
 
         function writeJsonSchema(obj, filePath)
         %writeJsonSchema Write JSON Schema description to file
-            try
-                jsonStr = jsonencode(obj.toJsonSchema(), 'PrettyPrint', true);
-            catch
-                jsonStr = jsonencode(obj.toJsonSchema());
+            arguments
+                obj (1,1) nansen.options.Schema
+                filePath (1,1) string
             end
-            writeTextFile(filePath, jsonStr)
-        end
-
-        function title = getDisplayTitle(obj)
-            if ~isempty(obj.Title)
-                title = obj.Title;
-            else
-                nameParts = strsplit(obj.Name, '.');
-                title = nameParts{end};
-            end
-        end
-
-        function disp(obj)
-            if numel(obj) ~= 1 || ~isvalid(obj)
-                builtin('disp', obj); return
-            end
-            fprintf('  Options schema for "%s" (version %s)\n', obj.Name, obj.Version)
-            if ~isempty(obj.Description)
-                fprintf('  %s\n', obj.Description)
-            end
-            if obj.IsInferred
-                fprintf('  (Inferred from legacy options definition)\n')
-            end
-            fprintf('\n')
-            if ~isempty(obj.ParameterList)
-                try
-                    disp(obj.toTable())
-                catch % E.g if tables are not supported
-                    fprintf('  Parameters: %s\n', strjoin(obj.ParameterNames, ', '))
-                end
-            end
-            if ~isempty(obj.Presets)
-                fprintf('  Presets: %s\n\n', strjoin(obj.PresetNames, ', '))
-            end
+            writelines(jsonencode(obj.toJsonSchema(), PrettyPrint=true), filePath)
         end
     end
 
     methods % Set/get
 
-        function parameters = get.Parameters(obj)
-            if isempty(obj.ParameterList)
-                parameters = nansen.options.Parameter.empty;
-            else
-                parameters = [obj.ParameterList{:}];
-            end
-        end
-
         function names = get.ParameterNames(obj)
-            names = cellfun(@(p) p.Name, obj.ParameterList, 'UniformOutput', false);
-            names = reshape(names, 1, []);
+            names = [string.empty(1, 0), obj.Parameters.Name];
         end
 
         function names = get.PresetNames(obj)
-            names = reshape({obj.Presets.Name}, 1, []);
+            names = [string.empty(1, 0), obj.Presets.Name];
         end
 
-        function n = get.NumParameters(obj)
-            n = numel(obj.ParameterList);
+        function names = get.GroupNames(obj)
+            names = obj.ParameterNames(contains(obj.ParameterNames, "."));
+            names = unique(extractBefore(names, "."), "stable");
         end
 
-        function set.Version(obj, value)
-            value = char(value);
-            assert(~isempty(regexp(value, '^\d+(\.\d+)*$', 'once')), ...
-                'NANSEN:Options:InvalidVersion', ...
-                'Version must be a version string like "1.0.0"')
-            obj.Version = value;
+        function title = get.DisplayTitle(obj)
+            if obj.Title ~= ""
+                title = obj.Title;
+            else
+                nameParts = split(obj.Name, ".");
+                title = nameParts(end);
+            end
+        end
+    end
+
+    methods (Hidden)
+        function markAsInferred(obj)
+        %markAsInferred Mark schema as inferred from a legacy definition
+            obj.IsInferred = true;
+        end
+    end
+    
+    methods (Access = protected) % Custom display
+
+        function header = getHeader(obj)
+            if ~isscalar(obj)
+                header = getHeader@matlab.mixin.CustomDisplay(obj); return
+            end
+            header = sprintf("  Options schema for <strong>%s</strong> (version %s)\n", ...
+                obj.DisplayTitle, obj.Version);
+            if obj.Description ~= ""
+                header = header + sprintf("  %s\n", obj.Description);
+            end
+            if obj.IsInferred
+                header = header + sprintf("  (Inferred from legacy options definition)\n");
+            end
+            header = char(header);
+        end
+
+        function displayScalarObject(obj)
+            fprintf("%s\n", obj.getHeader())
+            if ~isempty(obj.Parameters)
+                disp(obj.toTable())
+            end
+            if ~isempty(obj.Presets)
+                fprintf("  Presets: %s\n\n", strjoin(obj.PresetNames, ", "))
+            end
         end
     end
 
     methods (Access = private)
         function idx = getParameterIndex(obj, name)
-            idx = find(strcmp(obj.ParameterNames, obj.resolveName(name)));
-        end
-    end
-
-    methods (Static)
-
-        function obj = fromStruct(S, name, varargin)
-        %fromStruct Infer a schema from a (legacy) struct of default options
-        %
-        %   schema = nansen.options.Schema.fromStruct(S, name) creates a
-        %   schema where the default values are taken from S. Configuration
-        %   fields (fieldname_) used by the structeditor app are converted
-        %   to parameter attributes (choices, widgets, internal/transient).
-        %
-        %   schema = nansen.options.Schema.fromStruct(S, name, Name, Value)
-        %
-        %   NAME-VALUE PAIRS:
-        %       Version      : Schema version (default '1.0.0')
-        %       Descriptions : containers.Map with descriptions per
-        %                      parameter name (see parseParameterComments)
-        %       Validators   : Struct with validation functions (same
-        %                      structure as S), e.g. the V struct of legacy
-        %                      getDefaultParameters functions.
-
-            if nargin < 2; name = ''; end
-
-            params = struct('Version', '1.0.0', 'Descriptions', [], 'Validators', []);
-            params = parseNameValuePairs(params, varargin{:});
-
-            obj = nansen.options.Schema(name, 'Version', params.Version);
-            obj.IsInferred = true;
-
-            [configNames, configValues] = collectEditorConfigFields(S, '');
-            S = nansen.options.Schema.removeEditorConfigFields(S);
-            [names, values] = nansen.options.internal.flattenStruct(S);
-
-            for i = 1:numel(names)
-                attributes = {};
-
-                [hasConfig, idx] = ismember([names{i}, '_'], configNames);
-                if hasConfig
-                    attributes = configToAttributes(configValues{idx}, values{i});
-                end
-
-                if isa(params.Descriptions, 'containers.Map') && ...
-                        isKey(params.Descriptions, names{i})
-                    attributes = [attributes, {'Description', params.Descriptions(names{i})}]; %#ok<AGROW>
-                end
-
-                if isstruct(params.Validators) && ...
-                        nansen.options.internal.hasValue(params.Validators, names{i})
-                    validatorFcn = nansen.options.internal.getValue(params.Validators, names{i});
-                    if isa(validatorFcn, 'function_handle')
-                        attributes = [attributes, {'Validator', validatorFcn}]; %#ok<AGROW>
-                    end
-                end
-
-                try
-                    obj.addParameter(names{i}, values{i}, attributes{:});
-                catch ME
-                    % If an inferred attribute is incompatible with default
-                    % value (e.g. choices not including the default),
-                    % fall back to adding the parameter without attributes
-                    warning('NANSEN:Options:InferenceProblem', ...
-                        'Could not infer attributes for "%s": %s', names{i}, ME.message)
-                    obj.addParameter(names{i}, values{i});
-                end
-            end
-        end
-
-        function S = removeEditorConfigFields(S)
-        %removeEditorConfigFields Remove structeditor configuration fields
-        %
-        %   Removes all fields ending with "_" (e.g. "name_") at any level
-        %   of a nested struct.
-
-            if ~isstruct(S) || ~isscalar(S); return; end
-
-            fields = fieldnames(S);
-            for i = 1:numel(fields)
-                if strcmp(fields{i}(end), '_')
-                    S = rmfield(S, fields{i});
-                elseif nansen.options.internal.isGroup(S.(fields{i}))
-                    S.(fields{i}) = nansen.options.Schema.removeEditorConfigFields(S.(fields{i}));
-                end
-            end
+            idx = find(obj.ParameterNames == obj.resolveName(name));
         end
     end
 end
 
-function [names, values] = collectEditorConfigFields(S, prefix)
-%collectEditorConfigFields Get (dotted) names and values of config fields
-    names = {}; values = {};
-    fields = fieldnames(S);
-    for i = 1:numel(fields)
-        name = fields{i};
-        if ~isempty(prefix); name = [prefix, '.', name]; end %#ok<AGROW>
-        
-        if strcmp(fields{i}(end), '_')
-            names{end+1} = name; %#ok<AGROW>
-            values{end+1} = S.(fields{i}); %#ok<AGROW>
-        elseif nansen.options.internal.isGroup(S.(fields{i}))
-            [subNames, subValues] = collectEditorConfigFields(S.(fields{i}), name);
-            names = [names, subNames]; %#ok<AGROW>
-            values = [values, subValues]; %#ok<AGROW>
-        end
-    end
-end
-
-function attributes = configToAttributes(config, defaultValue)
-%configToAttributes Convert structeditor config field value to attributes
-
-    attributes = {};
-
-    if iscell(config)
-        if ischar(defaultValue) || isnumeric(defaultValue)
-            attributes = {'Choices', config};
-        end
-    elseif ischar(config)
-        switch config
-            case {'internal', 'ignore'}
-                attributes = {'Internal', true};
-            case 'transient'
-                attributes = {'Transient', true};
-            otherwise
-                attributes = {'Widget', config};
-        end
-    elseif isstruct(config) && isfield(config, 'type')
-        attributes = {'Widget', config};
-        if strcmp(config.type, 'slider') && isfield(config, 'args')
-            args = config.args;
-            for i = 1:2:numel(args)-1
-                if any(strcmpi(args{i}, {'Min', 'Max'}))
-                    attributes = [attributes, {args{i}, args{i+1}}]; %#ok<AGROW>
-                end
-            end
-        end
-    elseif isa(config, 'function_handle')
-        attributes = {'Widget', config};
-    end
+function issues = createIssuesTable()
+    issues = table('Size', [0, 3], ...
+        'VariableTypes', ["string", "string", "string"], ...
+        'VariableNames', ["Name", "Issue", "Message"]);
 end
 
 function S = addJsonSchemaProperty(S, nameParts, property)
-    if numel(nameParts) == 1
-        S.(nameParts{1}) = property;
+    if isscalar(nameParts)
+        S.(nameParts(1)) = property;
     else
-        if ~isfield(S, nameParts{1})
-            S.(nameParts{1}) = struct('type', 'object', 'properties', struct());
+        if ~isfield(S, nameParts(1))
+            S.(nameParts(1)) = struct("type", "object", "properties", struct());
         end
-        S.(nameParts{1}).properties = addJsonSchemaProperty( ...
-            S.(nameParts{1}).properties, nameParts(2:end), property);
+        S.(nameParts(1)).properties = addJsonSchemaProperty( ...
+            S.(nameParts(1)).properties, nameParts(2:end), property);
     end
-end
-
-function params = parseNameValuePairs(params, varargin)
-    names = fieldnames(params);
-    for i = 1:2:numel(varargin)
-        name = validatestring(char(varargin{i}), names);
-        params.(name) = varargin{i+1};
-    end
-end
-
-function writeTextFile(filePath, text)
-    fid = fopen(filePath, 'w', 'n', 'UTF-8');
-    if fid == -1
-        error('NANSEN:Options:FileError', 'Could not open file "%s" for writing', filePath)
-    end
-    cleanupObj = onCleanup(@() fclose(fid));
-    fprintf(fid, '%s', text);
 end

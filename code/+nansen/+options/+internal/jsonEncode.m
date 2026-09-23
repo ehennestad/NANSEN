@@ -1,106 +1,115 @@
-function jsonStr = jsonEncode(value, prettyPrint)
+function jsonStr = jsonEncode(value, options)
 %jsonEncode Encode a MATLAB value as JSON text, preserving MATLAB types
 %
 %   jsonStr = nansen.options.internal.jsonEncode(value) encodes value as
 %   JSON. Values that do not survive a plain jsonencode/jsondecode round
 %   trip (e.g. NaN/Inf, matrices, column vectors, integer types, empty or
-%   mixed cell arrays, struct arrays and function handles) are encoded as
-%   tagged objects which are restored by nansen.options.internal.jsonDecode.
+%   mixed cell arrays, struct arrays, string arrays, datetimes,
+%   enumerations and function handles) are encoded as tagged objects which
+%   are restored by nansen.options.internal.jsonDecode.
 %
-%   Common option values (scalars, row vectors, character vectors, cell
-%   arrays of character vectors and nested structs) are encoded as plain
-%   JSON so that files remain easy to read and edit by hand.
+%   Common option values (scalars, row vectors, text, cell arrays of
+%   character vectors and nested structs) are encoded as plain JSON, so
+%   that files remain easy to read and edit by hand.
 %
-%   jsonStr = nansen.options.internal.jsonEncode(value, prettyPrint)
-%   specifies whether to pretty print (default = true).
+%   jsonStr = nansen.options.internal.jsonEncode(value, PrettyPrint=false)
 %
 %   See also nansen.options.internal.jsonDecode
 
-    if nargin < 2; prettyPrint = true; end
-
-    encoded = encodeValue(value);
-
-    if prettyPrint
-        try
-            jsonStr = jsonencode(encoded, 'PrettyPrint', true);
-        catch % PrettyPrint requires R2021a
-            jsonStr = jsonencode(encoded);
-        end
-    else
-        jsonStr = jsonencode(encoded);
+    arguments
+        value
+        options.PrettyPrint (1,1) logical = true
     end
+
+    jsonStr = string(jsonencode(encodeValue(value), ...
+        "PrettyPrint", options.PrettyPrint));
 end
 
 function out = encodeValue(value)
 
-    if isstring(value)
-        if isscalar(value)
-            value = char(value);
-        else
-            value = cellstr(value);
-        end
-    end
-
     if isstruct(value)
         if isscalar(value)
             out = struct();
-            fields = fieldnames(value);
-            for i = 1:numel(fields)
-                out.(fields{i}) = encodeValue(value.(fields{i}));
+            for field = string(fieldnames(value))'
+                out.(field) = encodeValue(value.(field));
             end
         else
-            data = struct();
-            for i = 1:numel(value)
-                data.(sprintf('i%d', i)) = encodeValue(value(i));
-            end
-            out = createTaggedValue('struct', value, data);
-            out.fields = fieldnames(value)';
+            out = createTaggedValue("struct", value, encodeElements(value));
+            out.fields = string(fieldnames(value))';
         end
 
     elseif iscell(value)
-        if ~isempty(value) && isrow(value) && iscellstr(value) %#ok<ISCLSTR>
+        if ~isempty(value) && isrow(value) && iscellstr(value)
             out = value;
         else
-            data = struct();
-            for i = 1:numel(value)
-                data.(sprintf('i%d', i)) = encodeValue(value{i});
-            end
-            out = createTaggedValue('cell', value, data);
+            out = createTaggedValue("cell", value, encodeElements(value));
         end
 
     elseif ischar(value)
         if isequal(size(value), [0, 0]) || (isrow(value) && ~isempty(value))
             out = value;
         else
-            out = createTaggedValue('char', value, cellstr(value));
+            out = createTaggedValue("char", value, cellstr(value));
         end
+
+    elseif isstring(value)
+        if isscalar(value) && ~ismissing(value)
+            out = value;
+        else
+            data = cell(1, numel(value)); % Missing strings are stored as []
+            isPresent = ~ismissing(value(:)');
+            data(isPresent) = cellstr(value(isPresent));
+            out = createTaggedValue("string", value, data);
+        end
+
+    elseif isenumeration(value)
+        out = createTaggedValue("enumeration", value, cellstr(string(value(:)')));
 
     elseif isnumeric(value) || islogical(value)
         if ~isreal(value)
-            error('NANSEN:Options:UnsupportedType', ...
-                'Complex values are not supported in options')
+            error("NANSEN:Options:UnsupportedType", ...
+                "Complex values are not supported in options")
         end
 
-        isPlain = ( isa(value, 'double') || islogical(value) ) ...
+        isPlain = ( isa(value, "double") || islogical(value) ) ...
             && ~isempty(value) && isrow(value) && all(isfinite(double(value)));
 
         if isPlain
             out = value;
+        elseif isempty(value)
+            out = createTaggedValue("numeric", value, {});
+        elseif isinteger(value) || islogical(value)
+            out = createTaggedValue("numeric", value, cellstr(compose("%d", value(:)')));
         else
-            if isinteger(value) || islogical(value)
-                data = arrayfun(@(x) sprintf('%d', x), value(:)', 'UniformOutput', false);
-            else
-                data = arrayfun(@(x) sprintf('%.17g', x), value(:)', 'UniformOutput', false);
-            end
-            out = createTaggedValue('numeric', value, data);
+            out = createTaggedValue("numeric", value, cellstr(compose("%.17g", value(:)')));
         end
 
-    elseif isa(value, 'function_handle')
-        out = createTaggedValue('function_handle', value, func2str(value));
+    elseif isdatetime(value)
+        out = createTaggedValue("datetime", value, ...
+            cellstr(string(value(:)', "yyyy-MM-dd'T'HH:mm:ss.SSSSSSSSS")));
+        out.timezone = value.TimeZone;
+
+    elseif isa(value, "function_handle")
+        out = createTaggedValue("function_handle", value, func2str(value));
 
     else
-        error('NANSEN:Options:UnsupportedType', ...
-            'Values of type "%s" can not be saved as options', class(value))
+        error("NANSEN:Options:UnsupportedType", ...
+            "Values of type ""%s"" can not be saved as options", class(value))
+    end
+end
+
+function data = encodeElements(value)
+%encodeElements Encode elements of an array as fields i1, i2, ... of a struct
+%
+%   Elements are stored in an object (not a JSON array) because jsondecode
+%   would otherwise merge compatible elements into arrays.
+    data = struct();
+    for i = 1:numel(value)
+        if iscell(value)
+            data.(sprintf("i%d", i)) = encodeValue(value{i});
+        else
+            data.(sprintf("i%d", i)) = encodeValue(value(i));
+        end
     end
 end
 
@@ -110,4 +119,9 @@ function out = createTaggedValue(typeName, value, data)
     out.class = class(value);
     out.size = size(value);
     out.data = data;
+end
+
+function tf = isenumeration(value)
+    mc = meta.class.fromName(class(value));
+    tf = ~isempty(mc) && mc.Enumeration;
 end

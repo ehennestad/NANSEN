@@ -1,15 +1,20 @@
 function tf = hasValue(S, name)
 %hasValue Check if a (nested) field exists using a dotted name
 %
-%   tf = nansen.options.internal.hasValue(S, 'Group.field')
+%   tf = nansen.options.internal.hasValue(S, "Group.field")
 
-    parts = strsplit(name, '.');
+    arguments
+        S (1,1) struct
+        name (1,1) string
+    end
+
     tf = true;
     value = S;
-    for i = 1:numel(parts)
-        if ~isstruct(value) || ~isscalar(value) || ~isfield(value, parts{i})
-            tf = false; return
+    for part = split(name, ".")'
+        if ~isstruct(value) || ~isscalar(value) || ~isfield(value, part)
+            tf = false;
+            return
         end
-        value = value.(parts{i});
+        value = value.(part);
     end
 end

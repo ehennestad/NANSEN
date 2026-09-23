@@ -2,7 +2,7 @@ function [names, values] = flattenStruct(S, prefix)
 %flattenStruct Flatten a nested struct into dotted names and leaf values
 %
 %   [names, values] = nansen.options.internal.flattenStruct(S) returns a
-%   cell array of dotted field paths (e.g. 'Group.field') for all leaf
+%   string array of dotted field paths (e.g. "Group.field") for all leaf
 %   fields of the scalar struct S, together with a cell array of the
 %   corresponding values.
 %
@@ -13,31 +13,33 @@ function [names, values] = flattenStruct(S, prefix)
 %   Example:
 %       S.A.b = 1; S.c = 'x';
 %       [names, values] = nansen.options.internal.flattenStruct(S)
-%       % names = {'A.b', 'c'}, values = {1, 'x'}
+%       % names = ["A.b", "c"], values = {1, 'x'}
 
-    if nargin < 2; prefix = ''; end
+    arguments
+        S (1,1) struct
+        prefix (1,1) string = ""
+    end
 
-    names = cell(1, 0);
+    names = string.empty(1, 0);
     values = cell(1, 0);
 
-    if ~isstruct(S) || ~isscalar(S); return; end
+    fields = string(fieldnames(S))';
 
-    fields = fieldnames(S);
-
-    for i = 1:numel(fields)
-        name = fields{i};
-        if ~isempty(prefix)
-            name = [prefix, '.', name]; %#ok<AGROW>
+    for field = fields
+        if prefix == ""
+            name = field;
+        else
+            name = prefix + "." + field;
         end
 
-        value = S.(fields{i});
+        value = S.(field);
 
         if nansen.options.internal.isGroup(value)
             [subNames, subValues] = nansen.options.internal.flattenStruct(value, name);
             names = [names, subNames]; %#ok<AGROW>
             values = [values, subValues]; %#ok<AGROW>
         else
-            names{end+1} = name; %#ok<AGROW>
+            names(end+1) = name; %#ok<AGROW>
             values{end+1} = value; %#ok<AGROW>
         end
     end

@@ -1,65 +1,68 @@
 classdef ProvenanceTest < matlab.unittest.TestCase
-%ProvenanceTest Tests for nansen.options.Provenance
+%ProvenanceTest Tests for nansen.options.Provenance and git information
 
     methods (TestClassSetup)
         function addCodeToPath(testCase)
-            rootPath = fileparts(fileparts(fileparts(mfilename('fullpath'))));
+            rootPath = fileparts(fileparts(fileparts(mfilename("fullpath"))));
             testCase.applyFixture(matlab.unittest.fixtures.PathFixture( ...
-                fullfile(rootPath, 'code'), 'IncludingSubfolders', true))
+                fullfile(rootPath, "code"), IncludingSubfolders=true))
         end
     end
 
     methods (Test)
         function testCapture(testCase)
-            S = nansen.options.Provenance.capture( ...
-                'MethodName', 'nansen.options.Schema', 'IncludeToolboxes', false);
+            p = nansen.options.Provenance.capture( ...
+                MethodName="nansen.options.Schema", IncludeToolboxes=false);
 
-            testCase.verifyEqual(S.Nansen.Version, nansen.version())
-            testCase.verifyNotEmpty(S.Matlab.Version)
-            testCase.verifyNotEmpty(S.Timestamp)
-            testCase.verifyNotEmpty(S.Method.FileHash)
-            testCase.verifyTrue(isstruct(S.Dependencies))
+            testCase.verifyEqual(p.Nansen.Version, string(nansen.version()))
+            testCase.verifyNotEmpty(p.Matlab.Version)
+            testCase.verifyFalse(isnat(p.Timestamp))
+            testCase.verifyMatches(p.Method.FileHash, "^[0-9a-f]{64}$")
 
             % When run from a git clone, the commit is recorded
             rootPath = nansen.options.Provenance.getNansenRootPath();
-            if isfolder(fullfile(rootPath, '.git'))
-                testCase.verifyMatches(S.Nansen.Commit, '^[0-9a-f]{40}$')
+            if isfolder(fullfile(rootPath, ".git"))
+                testCase.verifyMatches(p.Nansen.Commit, "^[0-9a-f]{40}$")
             end
+
+            restored = nansen.options.Provenance.fromStruct(p.toStruct());
+            testCase.verifyEqual(restored.Nansen, p.Nansen)
+        end
+
+        function testSha256(testCase)
+            testCase.verifyEqual(nansen.options.internal.sha256("abc"), ...
+                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+            % Non-ASCII text is hashed as UTF-8
+            testCase.verifyEqual(nansen.options.internal.sha256("æøå"), ...
+                nansen.options.internal.sha256(unicode2native('æøå', 'UTF-8')))
         end
 
         function testGitInfoWithoutRepository(testCase)
             fixture = testCase.applyFixture(matlab.unittest.fixtures.TemporaryFolderFixture);
-            folder = fixture.Folder;
-            info = nansen.options.internal.getGitInfo(folder);
-            testCase.verifyEmpty(info.Commit)
+            info = nansen.options.internal.getGitInfo(fixture.Folder);
+            testCase.verifyEqual(info.Commit, "")
         end
 
         function testGitInfoPackedRefs(testCase)
             fixture = testCase.applyFixture(matlab.unittest.fixtures.TemporaryFolderFixture);
-            folder = fixture.Folder;
-            gitDir = fullfile(folder, '.git');
+            gitDir = fullfile(fixture.Folder, ".git");
             mkdir(gitDir)
-            writeText(fullfile(gitDir, 'HEAD'), sprintf('ref: refs/heads/main\n'))
-            commit = repmat('a', 1, 40);
-            writeText(fullfile(gitDir, 'packed-refs'), ...
-                sprintf('# pack-refs\n%s refs/heads/main\n', commit))
-            writeText(fullfile(gitDir, 'config'), sprintf( ...
-                '[remote "origin"]\n\turl = https://user:secret@github.com/org/repo.git\n'))
+            writelines("ref: refs/heads/main", fullfile(gitDir, "HEAD"))
+            commit = string(repmat('a', 1, 40));
+            writelines(["# pack-refs"; commit + " refs/heads/main"], ...
+                fullfile(gitDir, "packed-refs"))
+            writelines(["[remote ""origin""]"; ...
+                "	url = https://user:secret@github.com/org/repo.git"], ...
+                fullfile(gitDir, "config"))
 
-            subFolder = fullfile(folder, 'sub');
+            subFolder = fullfile(fixture.Folder, "sub");
             mkdir(subFolder)
             info = nansen.options.internal.getGitInfo(subFolder);
 
             testCase.verifyEqual(info.Commit, commit)
-            testCase.verifyEqual(info.Branch, 'main')
+            testCase.verifyEqual(info.Branch, "main")
             % Credentials are removed from the remote url
-            testCase.verifyEqual(info.RemoteUrl, 'https://github.com/org/repo.git')
+            testCase.verifyEqual(info.RemoteUrl, "https://github.com/org/repo.git")
         end
     end
-end
-
-function writeText(filePath, text)
-    fid = fopen(filePath, 'w');
-    fprintf(fid, '%s', text);
-    fclose(fid);
 end

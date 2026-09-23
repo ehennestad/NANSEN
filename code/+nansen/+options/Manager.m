@@ -13,40 +13,40 @@ classdef Manager < handle
 %       4. Runtime overrides    (given when calling a method)
 %
 %   USAGE:
-%       m = nansen.options.Manager('nansen.some.method');
-%       m = nansen.options.Manager(schema, 'Location', folderPath);
+%       m = nansen.options.Manager("some.package.MyMethod");
+%       m = nansen.options.Manager(schema, Location=folderPath);
 %
 %       m.listProfiles()
 %
 %       % Get options (and a record for provenance)
 %       opts = m.resolve();                          % default profile
-%       [opts, record] = m.resolve('Fast', 'binSize', 3);
+%       [opts, record] = m.resolve("Fast", Overrides={"binSize", 3});
 %
 %       % Create a profile from a preset, with some changes
-%       m.createProfile('My profile', {'binSize', 4}, 'Parent', 'Fast', ...
-%           'Description', 'Tuned for dataset X')
-%       m.setDefaultProfile('My profile')
+%       m.createProfile("My profile", {"binSize", 4}, Parent="Fast", ...
+%           Description="Tuned for dataset X")
+%       m.setDefaultProfile("My profile")
 %
-%       % Edit options interactively and save as a new profile
-%       opts = m.edit('My profile');
-%       m.createProfile('My profile 2', opts, 'Parent', 'My profile')
+%       % Edit options interactively
+%       opts = m.edit("My profile");
 %
 %   See also nansen.options.Schema nansen.options.Profile
 %            nansen.options.OptionsRecord nansen.options.getSchema
 
-    properties (SetAccess = private)
-        Schema = []                 % nansen.options.Schema
-        Store = []                  % nansen.options.ProfileStore
+    properties (SetAccess = immutable)
+        Schema (1,1) nansen.options.Schema          % Schema of method
+        Store (1,1) nansen.options.ProfileStore     % Storage of user profiles
     end
 
-    properties (Dependent)
-        MethodName                  % Name of method
-        ProfileNames                % Names of all profiles (defaults, presets and user profiles)
-        DefaultProfileName          % Name of profile used when no profile is specified
+    properties (Dependent, SetAccess = private)
+        MethodName (1,1) string             % Name of method
+        ProfileNames (1,:) string           % Names of all profiles (defaults, presets and user profiles)
+        UserProfileNames (1,:) string       % Names of profiles saved by users
+        DefaultProfileName (1,1) string     % Name of profile used when no profile is specified
     end
 
     methods % Constructor
-        function obj = Manager(schema, varargin)
+        function obj = Manager(schema, options)
         %Manager Create an options manager
         %
         %   m = nansen.options.Manager(methodName) creates a manager for
@@ -56,30 +56,23 @@ classdef Manager < handle
         %   m = nansen.options.Manager(schema) creates a manager for the
         %   given schema.
         %
-        %   m = nansen.options.Manager(..., 'Location', folderPath) saves
+        %   m = nansen.options.Manager(..., Location=folderPath) saves
         %   profiles in the given folder.
 
-            if ischar(schema) || isstring(schema)
+            arguments
+                schema {mustBeA(schema, ["string", "char", "nansen.options.Schema"])}
+                options.Location (1,1) string = ""
+            end
+
+            if ~isa(schema, "nansen.options.Schema")
                 schema = nansen.options.getSchema(schema);
             end
-            assert(isa(schema, 'nansen.options.Schema'), ...
-                'NANSEN:Options:InvalidInput', ...
-                'First input must be a method name or a nansen.options.Schema')
-            assert(~isempty(schema.Name), 'NANSEN:Options:InvalidInput', ...
-                'Schema must have a name')
-
-            location = '';
-            for i = 1:2:numel(varargin)
-                switch lower(char(varargin{i}))
-                    case 'location'
-                        location = char(varargin{i+1});
-                    otherwise
-                        error('NANSEN:Options:InvalidInput', ...
-                            'Unknown option "%s"', char(varargin{i}))
-                end
+            if schema.Name == ""
+                error("NANSEN:Options:InvalidInput", "Schema must have a name")
             end
 
-            if isempty(location)
+            location = options.Location;
+            if location == ""
                 location = nansen.options.Manager.getDefaultLocation(schema.Name);
             end
 
@@ -88,72 +81,9 @@ classdef Manager < handle
         end
     end
 
-    methods % Profiles
+    methods % Resolve options
 
-        function T = listProfiles(obj)
-        %listProfiles List all available profiles
-        %
-        %   T = m.listProfiles() returns a table (or struct array) with
-        %   Name, Type, Parent, Description, Modified and IsDefault.
-
-            defaultName = obj.DefaultProfileName;
-            defaultsName = obj.Schema.DEFAULTS_PROFILE_NAME;
-
-            S = struct('Name', {}, 'Type', {}, 'Parent', {}, ...
-                'Description', {}, 'Modified', {}, 'IsDefault', {});
-
-            S(end+1) = struct('Name', defaultsName, 'Type', 'defaults', ...
-                'Parent', '', 'Description', 'Default values', ...
-                'Modified', '', 'IsDefault', strcmp(defaultName, defaultsName));
-
-            for i = 1:numel(obj.Schema.Presets)
-                preset = obj.Schema.Presets(i);
-                S(end+1) = struct('Name', preset.Name, 'Type', 'preset', ...
-                    'Parent', defaultsName, 'Description', preset.Description, ...
-                    'Modified', '', 'IsDefault', strcmp(defaultName, preset.Name)); %#ok<AGROW>
-            end
-
-            userProfileNames = obj.Store.listProfileNames();
-            for i = 1:numel(userProfileNames)
-                profile = obj.Store.load(userProfileNames{i});
-                parentName = profile.Parent;
-                if isempty(parentName); parentName = defaultsName; end
-                S(end+1) = struct('Name', profile.Name, 'Type', 'user', ...
-                    'Parent', parentName, 'Description', profile.Description, ...
-                    'Modified', profile.Modified, ...
-                    'IsDefault', strcmp(defaultName, profile.Name)); %#ok<AGROW>
-            end
-
-            try
-                T = struct2table(S, 'AsArray', true);
-            catch % Tables not available
-                T = S;
-            end
-        end
-
-        function tf = hasProfile(obj, name)
-        %hasProfile Check if a profile (or preset) with given name exists
-            tf = strcmp(name, obj.Schema.DEFAULTS_PROFILE_NAME) || ...
-                obj.Schema.hasPreset(name) || obj.Store.exists(name);
-        end
-
-        function profile = getProfile(obj, name)
-        %getProfile Get a profile (presets and defaults are also returned as profiles)
-
-            if strcmp(name, obj.Schema.DEFAULTS_PROFILE_NAME)
-                profile = nansen.options.Profile(name, 'Type', 'defaults', ...
-                    'MethodName', obj.MethodName, 'SchemaVersion', obj.Schema.Version);
-            elseif obj.Schema.hasPreset(name)
-                preset = obj.Schema.getPreset(name);
-                profile = nansen.options.Profile(name, 'Type', 'preset', ...
-                    'MethodName', obj.MethodName, 'Description', preset.Description, ...
-                    'Overrides', preset.Overrides, 'SchemaVersion', obj.Schema.Version);
-            else
-                profile = obj.Store.load(name);
-            end
-        end
-
-        function [values, record] = resolve(obj, profileName, varargin)
+        function [values, record] = resolve(obj, profileName, options)
         %resolve Get the values of options for a profile
         %
         %   values = m.resolve() returns values of the default profile.
@@ -161,43 +91,117 @@ classdef Manager < handle
         %   values = m.resolve(profileName) returns values of the given
         %   profile (or preset).
         %
-        %   values = m.resolve(profileName, Name, Value, ...) or
-        %   values = m.resolve(profileName, overridesStruct) applies
-        %   runtime overrides on top of the profile. Names can be full
-        %   (dotted) names or unique short names.
+        %   values = m.resolve(profileName, Overrides=overrides) applies
+        %   runtime overrides on top of the profile. Overrides can be a
+        %   (partial) struct or a cell array of name-value pairs, where
+        %   names are full (dotted) names or unique short names.
         %
         %   [values, record] = m.resolve(...) also returns an
-        %   nansen.options.OptionsRecord that should be saved with the
+        %   nansen.options.OptionsRecord which should be saved with the
         %   results of the method.
+        %
+        %   NAME-VALUE ARGUMENTS:
+        %       Overrides         : Runtime overrides (struct or cell)
+        %       CaptureProvenance : Capture provenance in record (default true)
 
-            if nargin < 2 || isempty(profileName)
-                profileName = obj.DefaultProfileName;
+            arguments
+                obj (1,1) nansen.options.Manager
+                profileName (1,1) string = obj.DefaultProfileName
+                options.Overrides {mustBeA(options.Overrides, ["struct", "cell"])} = struct()
+                options.CaptureProvenance (1,1) logical = true
             end
-            profileName = char(profileName);
 
-            [values, sources, migrationLog] = obj.resolveProfile(profileName, {});
+            [values, sources, migrationLog] = obj.resolveProfile(profileName);
 
-            runtimeOverrides = struct();
-            if ~isempty(varargin)
-                if numel(varargin) == 1 && isstruct(varargin{1})
-                    runtimeOverrides = obj.Schema.parseOverrides(varargin{1});
-                else
-                    runtimeOverrides = obj.Schema.parseOverrides(varargin);
-                end
-                values = obj.Schema.applyOverrides(values, runtimeOverrides);
-                sources = markSources(sources, runtimeOverrides, 'runtime');
-            end
+            runtimeOverrides = obj.Schema.parseOverrides(options.Overrides);
+            values = obj.Schema.applyOverrides(values, runtimeOverrides);
+            sources = markSources(sources, runtimeOverrides, "runtime");
 
             if nargout > 1
                 record = nansen.options.OptionsRecord.create(obj.Schema, values, ...
-                    'ProfileName', profileName, ...
-                    'RuntimeOverrides', runtimeOverrides, ...
-                    'Sources', sources, ...
-                    'MigrationLog', migrationLog);
+                    ProfileName=profileName, ...
+                    RuntimeOverrides=runtimeOverrides, ...
+                    Sources=sources, ...
+                    MigrationLog=migrationLog, ...
+                    CaptureProvenance=options.CaptureProvenance);
             end
         end
 
-        function profile = createProfile(obj, name, values, varargin)
+        function differences = compareProfiles(obj, nameA, nameB)
+        %compareProfiles Compare the values of two profiles
+        %
+        %   differences = m.compareProfiles(nameA, nameB) returns a table
+        %   with variables Name, ValueA, ValueB and Change.
+            arguments
+                obj (1,1) nansen.options.Manager
+                nameA (1,1) string
+                nameB (1,1) string
+            end
+            differences = nansen.options.internal.diffStruct( ...
+                obj.resolveProfile(nameA, IsQuiet=true), ...
+                obj.resolveProfile(nameB, IsQuiet=true));
+        end
+    end
+
+    methods % Manage profiles
+
+        function T = listProfiles(obj)
+        %listProfiles List all available profiles
+        %
+        %   T = m.listProfiles() returns a table with Name, Type, Parent,
+        %   Description, Modified and IsDefault.
+            arguments
+                obj (1,1) nansen.options.Manager
+            end
+
+            userProfiles = arrayfun(@(name) obj.Store.read(name), ...
+                obj.UserProfileNames, UniformOutput=false);
+            profiles = [obj.getProfile(obj.Schema.DEFAULTS_NAME), ...
+                obj.Schema.Presets, userProfiles{:}];
+
+            Name = [profiles.Name]';
+            Type = [profiles.Type]';
+            Parent = [profiles.Parent]';
+            Parent(Parent == "" & Type ~= nansen.options.ProfileType.Defaults) = ...
+                obj.Schema.DEFAULTS_NAME;
+            Description = [profiles.Description]';
+            Modified = [profiles.Modified]';
+            IsDefault = Name == obj.DefaultProfileName;
+
+            T = table(Name, Type, Parent, Description, Modified, IsDefault);
+        end
+
+        function tf = hasProfile(obj, name)
+        %hasProfile Check if a profile (or preset) with given name exists
+            arguments
+                obj (1,1) nansen.options.Manager
+                name (1,1) string
+            end
+            tf = name == obj.Schema.DEFAULTS_NAME || ...
+                obj.Schema.hasPreset(name) || obj.Store.exists(name);
+        end
+
+        function profile = getProfile(obj, name)
+        %getProfile Get a profile (presets and defaults are also returned as profiles)
+            arguments
+                obj (1,1) nansen.options.Manager
+                name (1,1) string
+            end
+
+            if name == obj.Schema.DEFAULTS_NAME
+                profile = nansen.options.Profile(name, ...
+                    Type=nansen.options.ProfileType.Defaults, ...
+                    Description="Default values", ...
+                    MethodName=obj.MethodName, ...
+                    SchemaVersion=obj.Schema.Version);
+            elseif obj.Schema.hasPreset(name)
+                profile = obj.Schema.getPreset(name);
+            else
+                profile = obj.Store.read(name);
+            end
+        end
+
+        function profile = createProfile(obj, name, values, options)
         %createProfile Create and save a new profile
         %
         %   profile = m.createProfile(name, values) creates a profile.
@@ -205,109 +209,106 @@ classdef Manager < handle
         %   cell array of name-value pairs. Only values that differ from
         %   the parent are stored as overrides.
         %
-        %   profile = m.createProfile(name, values, Name, Value, ...)
+        %   profile = m.createProfile(name, values, Name=Value, ...)
         %
-        %   NAME-VALUE PAIRS:
+        %   NAME-VALUE ARGUMENTS:
         %       Parent      : Name of parent profile or preset (default: schema defaults)
         %       Description : Description of profile
         %       Frozen      : If true, values of this profile do not change
         %                     if inherited values (defaults/parent) change.
-        %       Tags        : Cell array of tags
+        %       Tags        : Tags for organizing profiles
         %       Overwrite   : Overwrite an existing profile (default false)
 
-            if nargin < 3; values = struct(); end
-
-            params = struct('Parent', '', 'Description', '', 'Frozen', false, ...
-                'Tags', {{}}, 'Overwrite', false);
-            params = parseNameValuePairs(params, varargin{:});
-
-            name = strtrim(char(name));
-            obj.assertValidNewProfileName(name, params.Overwrite)
-
-            parentName = char(params.Parent);
-            if strcmp(parentName, obj.Schema.DEFAULTS_PROFILE_NAME)
-                parentName = '';
-            end
-            if ~isempty(parentName)
-                assert(obj.hasProfile(parentName), 'NANSEN:Options:ProfileNotFound', ...
-                    'Parent profile "%s" does not exist', parentName)
-                assert(~strcmp(parentName, name), 'NANSEN:Options:InvalidInput', ...
-                    'A profile can not be its own parent')
+            arguments
+                obj (1,1) nansen.options.Manager
+                name (1,1) string {mustBeNonzeroLengthText, nansen.options.internal.mustBeProfileName}
+                values {mustBeA(values, ["struct", "cell"])} = struct()
+                options.Parent (1,1) string = ""
+                options.Description (1,1) string = ""
+                options.Frozen (1,1) logical = false
+                options.Tags (1,:) string = string.empty(1, 0)
+                options.Overwrite (1,1) logical = false
             end
 
-            [fullValues, overrides] = obj.computeValuesAndOverrides(values, parentName, []);
+            name = strtrim(name);
+            obj.assertValidNewProfileName(name, options.Overwrite)
 
-            timestamp = nansen.options.internal.isoTimestamp();
+            parentName = obj.normalizeParentName(options.Parent);
+            if parentName == name
+                error("NANSEN:Options:InvalidInput", "A profile can not be its own parent")
+            end
+
+            [fullValues, overrides] = obj.computeValuesAndOverrides(values, parentName);
+
+            timestamp = datetime("now", "TimeZone", "UTC");
 
             profile = nansen.options.Profile(name, ...
-                'Description', char(params.Description), ...
-                'MethodName', obj.MethodName, ...
-                'Parent', parentName, ...
-                'Overrides', overrides, ...
-                'Frozen', logical(params.Frozen), ...
-                'Tags', params.Tags, ...
-                'SchemaVersion', obj.Schema.Version, ...
-                'DefaultsHash', obj.Schema.getDefaultsHash(), ...
-                'Snapshot', fullValues, ...
-                'Created', timestamp, ...
-                'Modified', timestamp, ...
-                'CreatedBy', nansen.options.internal.getCurrentUser(), ...
-                'NansenVersion', getNansenVersion());
+                Description=options.Description, ...
+                MethodName=obj.MethodName, ...
+                Parent=parentName, ...
+                Overrides=overrides, ...
+                Frozen=options.Frozen, ...
+                Tags=options.Tags, ...
+                SchemaVersion=obj.Schema.Version, ...
+                DefaultsHash=obj.Schema.getDefaultsHash(), ...
+                Snapshot=fullValues, ...
+                Created=timestamp, ...
+                Modified=timestamp, ...
+                CreatedBy=nansen.options.internal.getCurrentUser(), ...
+                NansenVersion=getNansenVersion());
 
-            obj.Store.save(profile, params.Overwrite)
+            obj.Store.write(profile, Overwrite=options.Overwrite)
 
             if ~nargout; clear profile; end
         end
 
-        function profile = updateProfile(obj, name, values, varargin)
+        function profile = updateProfile(obj, name, values, options)
         %updateProfile Update values or attributes of a saved profile
         %
         %   profile = m.updateProfile(name, values) sets new values. values
         %   can be a partial struct or a cell array of name-value pairs.
         %
-        %   profile = m.updateProfile(name, values, Name, Value, ...) also
+        %   profile = m.updateProfile(name, values, Name=Value, ...) also
         %   updates attributes: Parent, Description, Frozen, Tags
         %
         %   The snapshot of the profile is updated, so any warnings about
         %   changed inherited values are resolved.
 
-            if nargin < 3; values = struct(); end
+            arguments
+                obj (1,1) nansen.options.Manager
+                name (1,1) string
+                values {mustBeA(values, ["struct", "cell"])} = struct()
+                options.Parent (1,1) string
+                options.Description (1,1) string
+                options.Frozen (1,1) logical
+                options.Tags (1,:) string
+            end
 
             obj.assertIsUserProfile(name)
-            profile = obj.Store.load(name);
-
-            params = struct('Parent', profile.Parent, ...
-                'Description', profile.Description, ...
-                'Frozen', profile.Frozen, 'Tags', {profile.Tags});
-            params = parseNameValuePairs(params, varargin{:});
-
-            parentName = char(params.Parent);
-            if strcmp(parentName, obj.Schema.DEFAULTS_PROFILE_NAME)
-                parentName = '';
-            end
-            if ~isempty(parentName)
-                assert(obj.hasProfile(parentName), 'NANSEN:Options:ProfileNotFound', ...
-                    'Parent profile "%s" does not exist', parentName)
-                obj.assertNoCycle(name, parentName)
-            end
 
             % Current values of the profile are the starting point
-            currentValues = obj.resolveProfile(name, {}, true);
-            [fullValues, overrides] = obj.computeValuesAndOverrides( ...
-                values, parentName, currentValues);
+            currentValues = obj.resolveProfile(name, IsQuiet=true);
+            profile = obj.Store.read(name);
 
-            profile.Parent = parentName;
-            profile.Description = char(params.Description);
-            profile.Frozen = logical(params.Frozen);
-            profile.Tags = params.Tags;
+            if isfield(options, "Parent")
+                profile.Parent = obj.normalizeParentName(options.Parent);
+                obj.assertNoCycle(name, profile.Parent)
+            end
+            if isfield(options, "Description"); profile.Description = options.Description; end
+            if isfield(options, "Frozen"); profile.Frozen = options.Frozen; end
+            if isfield(options, "Tags"); profile.Tags = options.Tags; end
+
+            [fullValues, overrides] = obj.computeValuesAndOverrides( ...
+                values, profile.Parent, currentValues);
+
             profile.Overrides = overrides;
             profile.Snapshot = fullValues;
             profile.SchemaVersion = obj.Schema.Version;
             profile.DefaultsHash = obj.Schema.getDefaultsHash();
-            profile.Modified = nansen.options.internal.isoTimestamp();
+            profile.Modified = datetime("now", "TimeZone", "UTC");
             profile.NansenVersion = getNansenVersion();
 
-            obj.Store.save(profile, true)
+            obj.Store.write(profile, Overwrite=true)
 
             if ~nargout; clear profile; end
         end
@@ -318,34 +319,65 @@ classdef Manager < handle
         %   If defaults (or a parent profile) have changed since a profile
         %   was saved, resolving the profile gives a warning. Use this
         %   method to accept the changes and save the profile in the
-        %   current schema version. (For frozen profiles, values are kept
-        %   as they are and stored as explicit overrides instead)
+        %   current schema version. (Frozen profiles keep their values,
+        %   which are then stored as explicit overrides.)
+            arguments
+                obj (1,1) nansen.options.Manager
+                name (1,1) string
+            end
             profile = obj.updateProfile(name, struct());
             if ~nargout; clear profile; end
         end
 
+        function renameProfile(obj, name, newName)
+        %renameProfile Rename a saved profile
+        %
+        %   Profiles that derive from the profile and the default profile
+        %   setting are updated accordingly.
+            arguments
+                obj (1,1) nansen.options.Manager
+                name (1,1) string
+                newName (1,1) string {mustBeNonzeroLengthText, nansen.options.internal.mustBeProfileName}
+            end
+
+            obj.assertIsUserProfile(name)
+            obj.assertValidNewProfileName(newName, false)
+
+            profile = obj.Store.read(name);
+            profile.Name = newName;
+            profile.Modified = datetime("now", "TimeZone", "UTC");
+            obj.Store.write(profile)
+
+            for child = obj.getChildProfiles(name)
+                child.Parent = newName;
+                obj.Store.write(child, Overwrite=true)
+            end
+
+            if obj.Store.getSetting("DefaultProfile", "") == name
+                obj.Store.setSetting("DefaultProfile", newName)
+            end
+
+            obj.Store.remove(name)
+        end
+
         function deleteProfile(obj, name)
         %deleteProfile Delete a saved profile
+            arguments
+                obj (1,1) nansen.options.Manager
+                name (1,1) string
+            end
 
             obj.assertIsUserProfile(name)
 
-            % Do not delete profiles that other profiles depend on
-            userProfileNames = obj.Store.listProfileNames();
-            children = {};
-            for i = 1:numel(userProfileNames)
-                profile = obj.Store.load(userProfileNames{i});
-                if strcmp(profile.Parent, name)
-                    children{end+1} = profile.Name; %#ok<AGROW>
-                end
-            end
+            children = obj.getChildProfiles(name);
             if ~isempty(children)
-                error('NANSEN:Options:ProfileInUse', ...
-                    'Can not delete "%s" because it is the parent of: %s', ...
-                    name, strjoin(children, ', '))
+                error("NANSEN:Options:ProfileInUse", ...
+                    "Can not delete ""%s"" because it is the parent of: %s", ...
+                    name, strjoin([children.Name], ", "))
             end
 
-            if strcmp(obj.Store.getSetting('DefaultProfile', ''), name)
-                obj.Store.setSetting('DefaultProfile', '')
+            if obj.Store.getSetting("DefaultProfile", "") == name
+                obj.Store.setSetting("DefaultProfile", "")
             end
 
             obj.Store.remove(name)
@@ -353,89 +385,117 @@ classdef Manager < handle
 
         function setDefaultProfile(obj, name)
         %setDefaultProfile Set profile to use when no profile is specified
-            assert(obj.hasProfile(name), 'NANSEN:Options:ProfileNotFound', ...
-                'No profile named "%s" exists', name)
-            if strcmp(name, obj.Schema.DEFAULTS_PROFILE_NAME); name = ''; end
-            obj.Store.setSetting('DefaultProfile', char(name))
+            arguments
+                obj (1,1) nansen.options.Manager
+                name (1,1) string
+            end
+            if ~obj.hasProfile(name)
+                error("NANSEN:Options:ProfileNotFound", "No profile named ""%s"" exists", name)
+            end
+            if name == obj.Schema.DEFAULTS_NAME; name = ""; end
+            obj.Store.setSetting("DefaultProfile", name)
         end
 
-        function differences = compareProfiles(obj, nameA, nameB)
-        %compareProfiles Compare the values of two profiles
+        function exportProfile(obj, name, filePath)
+        %exportProfile Export a profile to a JSON file (e.g. for sharing)
         %
-        %   differences = m.compareProfiles(nameA, nameB) returns a struct
-        %   array with fields Name, ValueA, ValueB and Change.
-            differences = nansen.options.internal.diffStruct( ...
-                obj.resolve(nameA), obj.resolve(nameB));
+        %   The exported file contains the fully resolved values, so it
+        %   can be imported without the parent profiles.
+            arguments
+                obj (1,1) nansen.options.Manager
+                name (1,1) string
+                filePath (1,1) string
+            end
+
+            profile = obj.getProfile(name);
+            values = obj.resolveProfile(name, IsQuiet=true);
+
+            exported = nansen.options.Profile(profile.Name, ...
+                Description=profile.Description, ...
+                MethodName=obj.MethodName, ...
+                Overrides=nansen.options.internal.diffToStruct( ...
+                    obj.Schema.getDefaults(), values), ...
+                Tags=profile.Tags, ...
+                SchemaVersion=obj.Schema.Version, ...
+                DefaultsHash=obj.Schema.getDefaultsHash(), ...
+                Snapshot=values, ...
+                Created=profile.Created, ...
+                Modified=datetime("now", "TimeZone", "UTC"), ...
+                CreatedBy=profile.CreatedBy, ...
+                NansenVersion=getNansenVersion());
+
+            writelines(nansen.options.internal.jsonEncode(exported.toStruct()), filePath)
         end
 
-        function [values, wasAborted] = edit(obj, profileName, values)
+        function profile = importProfile(obj, filePath, options)
+        %importProfile Import a profile from a JSON file
+        %
+        %   profile = m.importProfile(filePath) imports a profile exported
+        %   with exportProfile (or copied from another profile folder).
+        %
+        %   profile = m.importProfile(filePath, Name=newName) imports it
+        %   with a new name.
+            arguments
+                obj (1,1) nansen.options.Manager
+                filePath (1,1) string {mustBeFile}
+                options.Name (1,1) string = ""
+            end
+
+            imported = nansen.options.Profile.fromStruct( ...
+                nansen.options.internal.jsonDecode(fileread(filePath)));
+
+            if imported.MethodName ~= "" && imported.MethodName ~= obj.MethodName
+                error("NANSEN:Options:InvalidInput", ...
+                    "Profile is for method ""%s"", not ""%s""", ...
+                    imported.MethodName, obj.MethodName)
+            end
+
+            name = imported.Name;
+            if options.Name ~= ""; name = options.Name; end
+
+            % Values are migrated from the version the profile was saved with
+            values = imported.Snapshot;
+            if isempty(fieldnames(values)); values = imported.Overrides; end
+            if imported.SchemaVersion ~= ""
+                values = obj.Schema.migrate(values, imported.SchemaVersion);
+            end
+            values = obj.Schema.conform(values, Unknown="warn");
+
+            profile = obj.createProfile(name, values, ...
+                Description=imported.Description, Tags=imported.Tags, ...
+                Frozen=imported.Frozen);
+        end
+
+        function [values, wasCanceled] = edit(obj, profileName)
         %edit Edit options interactively in the options editor
         %
-        %   [values, wasAborted] = m.edit(profileName) opens the values of
-        %   a profile in the options editor and returns the edited values.
-        %   Use createProfile or updateProfile to save them.
-
-            if nargin < 2 || isempty(profileName)
-                profileName = obj.DefaultProfileName;
+        %   [values, wasCanceled] = m.edit(profileName) opens the options
+        %   editor, where profiles can also be created, saved and managed.
+        %   Returns the values that were selected when pressing OK.
+        %
+        %   See also nansen.options.ui.OptionsEditor
+            arguments
+                obj (1,1) nansen.options.Manager
+                profileName (1,1) string = obj.DefaultProfileName
             end
-            if nargin < 3 || isempty(values)
-                values = obj.resolve(profileName);
-            end
 
-            S = obj.Schema.toEditorStruct(values);
-            titleStr = sprintf('Options for %s (%s)', ...
-                obj.Schema.getDisplayTitle(), profileName);
-
-            [S, wasAborted] = tools.editStruct(S, 'all', titleStr);
-            values = obj.Schema.fromEditorStruct(S);
+            editor = nansen.options.ui.OptionsEditor(obj, Profile=profileName);
+            [values, wasCanceled] = editor.waitForResult();
         end
 
         function imported = importLegacyOptions(obj, filePath)
         %importLegacyOptions Import custom options saved by nansen.manage.OptionsManager
         %
         %   imported = m.importLegacyOptions() imports all custom options
-        %   sets that were saved with the legacy options manager as
-        %   profiles, and returns the names of imported profiles.
+        %   that were saved with the legacy options manager as profiles,
+        %   and returns the names of the imported profiles.
         %
-        %   imported = m.importLegacyOptions(filePath) imports from a
-        %   specific file.
-
-            if nargin < 2 || isempty(filePath)
-                filePath = obj.getLegacyFilePath();
+        %   See also nansen.options.legacy.importOptionsFile
+            arguments
+                obj (1,1) nansen.options.Manager
+                filePath (1,1) string = nansen.options.legacy.getOptionsFilePath(obj.MethodName)
             end
-
-            imported = cell(1, 0);
-            if isempty(filePath) || ~isfile(filePath)
-                return
-            end
-
-            S = load(filePath);
-            if ~isfield(S, 'OptionsEntries'); return; end
-
-            for i = 1:numel(S.OptionsEntries)
-                entry = S.OptionsEntries(i);
-                if ~strcmp(entry.Type, 'Custom') || obj.hasProfile(entry.Name)
-                    continue
-                end
-
-                try
-                    values = obj.Schema.conform(entry.Options, 'Unknown', 'warn');
-                    description = entry.Description;
-                    if isempty(description)
-                        description = sprintf('Imported from legacy options (created %s)', ...
-                            entry.DateCreated);
-                    end
-                    obj.createProfile(entry.Name, values, 'Description', description);
-                    imported{end+1} = entry.Name; %#ok<AGROW>
-                catch ME
-                    warning('NANSEN:Options:ImportFailed', ...
-                        'Could not import options "%s": %s', entry.Name, ME.message)
-                end
-            end
-
-            if isfield(S, 'DefaultOptionsName') && any(strcmp(imported, S.DefaultOptionsName))
-                obj.setDefaultProfile(S.DefaultOptionsName)
-            end
+            imported = nansen.options.legacy.importOptionsFile(obj, filePath);
         end
     end
 
@@ -446,66 +506,75 @@ classdef Manager < handle
         end
 
         function names = get.ProfileNames(obj)
-            names = [{obj.Schema.DEFAULTS_PROFILE_NAME}, obj.Schema.PresetNames, ...
-                obj.Store.listProfileNames()];
+            names = [obj.Schema.DEFAULTS_NAME, obj.Schema.PresetNames, ...
+                obj.UserProfileNames];
+        end
+
+        function names = get.UserProfileNames(obj)
+            names = obj.Store.list();
         end
 
         function name = get.DefaultProfileName(obj)
-            name = obj.Store.getSetting('DefaultProfile', '');
-            if isempty(name) || ~obj.hasProfile(name)
-                name = obj.Schema.DEFAULTS_PROFILE_NAME;
+            name = string(obj.Store.getSetting("DefaultProfile", ""));
+            if name == "" || ~obj.hasProfile(name)
+                name = obj.Schema.DEFAULTS_NAME;
             end
         end
     end
 
     methods (Access = private)
 
-        function [values, sources, migrationLog] = resolveProfile(obj, name, visited, isQuiet)
+        function [values, sources, migrationLog] = resolveProfile(obj, name, options)
         %resolveProfile Resolve values of a profile by resolving its parents
-
-            if nargin < 4; isQuiet = false; end
+            arguments
+                obj (1,1) nansen.options.Manager
+                name (1,1) string
+                options.Visited (1,:) string = string.empty(1, 0)
+                options.IsQuiet (1,1) logical = false
+            end
 
             schema = obj.Schema;
-            migrationLog = {};
+            migrationLog = string.empty(1, 0);
 
-            if strcmp(name, schema.DEFAULTS_PROFILE_NAME)
+            if name == schema.DEFAULTS_NAME
                 values = schema.getDefaults();
-                sources = markSources(struct(), values, 'defaults');
+                sources = markSources(struct(), values, "defaults");
 
             elseif schema.hasPreset(name)
-                [values, sources] = obj.resolveProfile(schema.DEFAULTS_PROFILE_NAME, visited);
+                [values, sources] = obj.resolveProfile(schema.DEFAULTS_NAME);
                 preset = schema.getPreset(name);
                 values = schema.applyOverrides(values, preset.Overrides);
-                sources = markSources(sources, preset.Overrides, ['preset:', name]);
+                sources = markSources(sources, preset.Overrides, "preset:" + name);
 
             elseif obj.Store.exists(name)
-                if any(strcmp(visited, name))
-                    error('NANSEN:Options:CyclicProfiles', ...
-                        'Profiles have cyclic parents: %s', strjoin([visited, {name}], ' -> '))
+                if ismember(name, options.Visited)
+                    error("NANSEN:Options:CyclicProfiles", ...
+                        "Profiles have cyclic parents: %s", ...
+                        strjoin([options.Visited, name], " -> "))
                 end
 
-                profile = obj.Store.load(name);
+                profile = obj.Store.read(name);
                 [overrides, snapshot, migrationLog] = obj.migrateProfile(profile);
 
                 parentName = profile.Parent;
-                if isempty(parentName); parentName = schema.DEFAULTS_PROFILE_NAME; end
-                [values, sources, parentLog] = obj.resolveProfile( ...
-                    parentName, [visited, {name}], isQuiet);
+                if parentName == ""; parentName = schema.DEFAULTS_NAME; end
+                [values, sources, parentLog] = obj.resolveProfile(parentName, ...
+                    Visited=[options.Visited, name], IsQuiet=options.IsQuiet);
                 migrationLog = [parentLog, migrationLog];
 
                 if profile.Frozen && ~isempty(fieldnames(snapshot))
-                    values = schema.conform(snapshot, 'Unknown', 'drop');
-                    sources = markSources(sources, snapshot, ['profile:', name, ' (frozen)']);
+                    values = schema.conform(snapshot, Unknown="drop");
+                    sources = markSources(sources, snapshot, "profile:" + name + " (frozen)");
                 else
                     values = schema.applyOverrides(values, overrides);
-                    sources = markSources(sources, overrides, ['profile:', name]);
-                    if ~isQuiet
+                    sources = markSources(sources, overrides, "profile:" + name);
+                    if ~options.IsQuiet
                         obj.warnIfValuesChanged(profile, values, snapshot)
                     end
                 end
             else
-                error('NANSEN:Options:ProfileNotFound', ...
-                    'No profile named "%s" exists for "%s"', name, obj.MethodName)
+                error("NANSEN:Options:ProfileNotFound", ...
+                    "No profile named ""%s"" exists for ""%s""", name, obj.MethodName)
             end
         end
 
@@ -515,25 +584,24 @@ classdef Manager < handle
             schema = obj.Schema;
             overrides = profile.Overrides;
             snapshot = profile.Snapshot;
-            migrationLog = {};
+            migrationLog = string.empty(1, 0);
 
-            if ~isempty(profile.SchemaVersion) && nansen.options.internal.compareVersions( ...
+            if profile.SchemaVersion ~= "" && nansen.options.internal.compareVersions( ...
                     profile.SchemaVersion, schema.Version) < 0
                 [overrides, migrationLog] = schema.migrate(overrides, profile.SchemaVersion);
                 snapshot = schema.migrate(snapshot, profile.SchemaVersion);
-                migrationLog = cellfun(@(str) sprintf('Profile "%s": %s', profile.Name, str), ...
-                    migrationLog, 'UniformOutput', false);
+                migrationLog = "Profile """ + profile.Name + """: " + migrationLog;
             end
 
             % Remove overrides for parameters which no longer exist.
-            overrideNames = nansen.options.internal.flattenStruct(overrides);
-            obsoleteNames = setdiff(overrideNames, schema.ParameterNames, 'stable');
+            obsoleteNames = setdiff(nansen.options.internal.flattenStruct(overrides), ...
+                schema.ParameterNames, "stable");
             if ~isempty(obsoleteNames)
-                warning('NANSEN:Options:ObsoleteParameter', ...
-                    ['Profile "%s" contains values for parameters that no longer ', ...
-                    'exist and will be ignored: %s'], profile.Name, strjoin(obsoleteNames, ', '))
-                for i = 1:numel(obsoleteNames)
-                    overrides = nansen.options.internal.removeValue(overrides, obsoleteNames{i});
+                warning("NANSEN:Options:ObsoleteParameter", ...
+                    "Profile ""%s"" contains values for parameters that no longer " + ...
+                    "exist and will be ignored: %s", profile.Name, strjoin(obsoleteNames, ", "))
+                for obsoleteName = obsoleteNames
+                    overrides = nansen.options.internal.removeValue(overrides, obsoleteName);
                 end
             end
         end
@@ -549,7 +617,7 @@ classdef Manager < handle
             if isempty(fieldnames(snapshot)); return; end
 
             try
-                snapshot = obj.Schema.conform(snapshot, 'Unknown', 'drop');
+                snapshot = obj.Schema.conform(snapshot, Unknown="drop");
             catch
                 return % Snapshot is no longer valid, i.e. schema changed
             end
@@ -557,85 +625,82 @@ classdef Manager < handle
             differences = nansen.options.internal.diffStruct(snapshot, values);
             if isempty(differences); return; end
 
-            changes = arrayfun(@(d) sprintf('  %s: %s -> %s', d.Name, ...
-                nansen.options.internal.valueToString(d.ValueA), ...
-                nansen.options.internal.valueToString(d.ValueB)), ...
-                differences, 'UniformOutput', false);
+            toText = @(values) string(cellfun(@nansen.options.internal.valueToString, ...
+                values, UniformOutput=false));
+            changes = "  " + differences.Name + ": " + toText(differences.ValueA) + ...
+                " -> " + toText(differences.ValueB);
 
-            warning('NANSEN:Options:InheritedValuesChanged', ...
-                ['Values of profile "%s" have changed since it was saved, because ', ...
-                'defaults or a parent profile changed:\n%s\n', ...
-                'Use refreshProfile to accept the new values, updateProfile to ', ...
-                'set explicit values, or make the profile Frozen to keep values fixed.'], ...
-                profile.Name, strjoin(changes, newline))
+            warning("NANSEN:Options:InheritedValuesChanged", ...
+                "Values of profile ""%s"" have changed since it was saved, because " + ...
+                "defaults or a parent profile changed:\n%s\n" + ...
+                "Use refreshProfile to accept the new values, updateProfile to " + ...
+                "set explicit values, or make the profile Frozen to keep values fixed.", ...
+                profile.Name, strjoin(changes', newline))
         end
 
         function [fullValues, overrides] = computeValuesAndOverrides(obj, values, parentName, baseValues)
         %computeValuesAndOverrides Get all values and overrides relative to parent
 
-            if isempty(parentName)
-                parentName = obj.Schema.DEFAULTS_PROFILE_NAME;
-            end
-            parentValues = obj.resolveProfile(parentName, {}, true);
+            if parentName == ""; parentName = obj.Schema.DEFAULTS_NAME; end
+            parentValues = obj.resolveProfile(parentName, IsQuiet=true);
 
-            if isempty(baseValues); baseValues = parentValues; end
-            if isempty(values); values = struct(); end
+            if nargin < 4; baseValues = parentValues; end
 
             fullValues = obj.Schema.applyOverrides(baseValues, values);
+            overrides = nansen.options.internal.diffToStruct(parentValues, fullValues);
+        end
 
-            differences = nansen.options.internal.diffStruct(parentValues, fullValues);
-            overrides = struct();
-            for i = 1:numel(differences)
-                overrides = nansen.options.internal.setValue(overrides, ...
-                    differences(i).Name, differences(i).ValueB);
+        function children = getChildProfiles(obj, name)
+        %getChildProfiles Get saved profiles which have the given parent
+            children = nansen.options.Profile.empty(1, 0);
+            for profileName = obj.UserProfileNames
+                profile = obj.Store.read(profileName);
+                if profile.Parent == name
+                    children(end+1) = profile; %#ok<AGROW>
+                end
+            end
+        end
+
+        function name = normalizeParentName(obj, name)
+            if name == obj.Schema.DEFAULTS_NAME; name = ""; end
+            if name ~= "" && ~obj.hasProfile(name)
+                error("NANSEN:Options:ProfileNotFound", ...
+                    "Parent profile ""%s"" does not exist", name)
             end
         end
 
         function assertValidNewProfileName(obj, name, allowOverwrite)
-            if isempty(name)
-                error('NANSEN:Options:InvalidName', 'Profile name can not be empty')
-            elseif strcmpi(name, obj.Schema.DEFAULTS_PROFILE_NAME)
-                error('NANSEN:Options:ReservedName', '"%s" is a reserved name', name)
+            if strcmpi(name, obj.Schema.DEFAULTS_NAME)
+                error("NANSEN:Options:ReservedName", """%s"" is a reserved name", name)
             elseif obj.Schema.hasPreset(name)
-                error('NANSEN:Options:ReservedName', ...
-                    'A preset named "%s" already exists', name)
+                error("NANSEN:Options:ReservedName", ...
+                    "A preset named ""%s"" already exists", name)
             elseif obj.Store.exists(name) && ~allowOverwrite
-                error('NANSEN:Options:ProfileExists', ...
-                    'A profile named "%s" already exists', name)
+                error("NANSEN:Options:ProfileExists", ...
+                    "A profile named ""%s"" already exists", name)
             end
         end
 
         function assertIsUserProfile(obj, name)
-            if strcmp(name, obj.Schema.DEFAULTS_PROFILE_NAME) || obj.Schema.hasPreset(name)
-                error('NANSEN:Options:ReadOnlyProfile', ...
-                    '"%s" is defined in code and can not be modified', name)
+            if name == obj.Schema.DEFAULTS_NAME || obj.Schema.hasPreset(name)
+                error("NANSEN:Options:ReadOnlyProfile", ...
+                    """%s"" is defined in code and can not be modified", name)
             elseif ~obj.Store.exists(name)
-                error('NANSEN:Options:ProfileNotFound', ...
-                    'No profile named "%s" exists for "%s"', name, obj.MethodName)
+                error("NANSEN:Options:ProfileNotFound", ...
+                    "No profile named ""%s"" exists for ""%s""", name, obj.MethodName)
             end
         end
 
         function assertNoCycle(obj, name, parentName)
-            visited = {name};
-            while ~isempty(parentName) && obj.Store.exists(parentName)
-                if any(strcmp(visited, parentName))
-                    error('NANSEN:Options:CyclicProfiles', ...
-                        'Setting parent to "%s" would create a cycle', parentName)
+            visited = name;
+            while parentName ~= "" && obj.Store.exists(parentName)
+                if ismember(parentName, visited)
+                    error("NANSEN:Options:CyclicProfiles", ...
+                        "Setting parent to ""%s"" would create a cycle", parentName)
                 end
-                visited{end+1} = parentName; %#ok<AGROW>
-                parentProfile = obj.Store.load(parentName);
+                visited(end+1) = parentName; %#ok<AGROW>
+                parentProfile = obj.Store.read(parentName);
                 parentName = parentProfile.Parent;
-            end
-        end
-
-        function filePath = getLegacyFilePath(obj)
-        %getLegacyFilePath Get path to file of legacy options manager
-            filePath = '';
-            try
-                folderPath = nansen.options.Manager.getOptionsFolder(obj.MethodName);
-                filePath = fullfile(folderPath, [obj.MethodName, '.mat']);
-            catch
-                % Options folder is not available (nansen is not set up)
             end
         end
     end
@@ -646,46 +711,36 @@ classdef Manager < handle
         %
         %   Profiles for methods that are part of NANSEN are saved in the
         %   user's local NANSEN folder, while profiles for methods that
-        %   are part of a project are saved in the project folder (same
-        %   rule as the legacy nansen.manage.OptionsManager).
-            location = fullfile(nansen.options.Manager.getOptionsFolder(methodName), 'profiles');
-        end
-        
-        function folderPath = getOptionsFolder(methodName)
-        %getOptionsFolder Get folder for options (local or project folder)
-            pathStr = which(methodName);
-            isNansenMethod = ~isempty(strfind(pathStr, fullfile('code', 'integrations', 'sessionmethods'))) || ...
-                ~isempty(strfind(pathStr, '+nansen')); %#ok<STREMP>
+        %   are part of a project are saved in the project folder.
+            arguments
+                methodName (1,1) string
+            end
+
+            filePath = string(which(methodName));
+            isNansenMethod = contains(filePath, fullfile("code", "integrations", "sessionmethods")) ...
+                || contains(filePath, "+nansen");
 
             if isNansenMethod
                 folderPath = nansen.localpath('custom_options');
             else
                 folderPath = nansen.localpath('project_custom_options');
             end
+            location = string(fullfile(folderPath, "profiles"));
         end
     end
 end
 
 function sources = markSources(sources, values, sourceName)
 %markSources Set source for all (leaf) values in values
-    names = nansen.options.internal.flattenStruct(values);
-    for i = 1:numel(names)
-        sources = nansen.options.internal.setValue(sources, names{i}, sourceName);
-    end
-end
-
-function params = parseNameValuePairs(params, varargin)
-    names = fieldnames(params);
-    for i = 1:2:numel(varargin)
-        name = validatestring(char(varargin{i}), names);
-        params.(name) = varargin{i+1};
+    for name = nansen.options.internal.flattenStruct(values)
+        sources = nansen.options.internal.setValue(sources, name, sourceName);
     end
 end
 
 function versionStr = getNansenVersion()
     try
-        versionStr = nansen.version();
+        versionStr = string(nansen.version());
     catch
-        versionStr = '';
+        versionStr = "";
     end
 end

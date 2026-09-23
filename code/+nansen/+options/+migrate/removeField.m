@@ -6,5 +6,10 @@ function S = removeField(S, name)
 %
 %   See also nansen.options.Schema/addMigration
 
+    arguments
+        S (1,1) struct
+        name (1,1) string
+    end
+
     S = nansen.options.internal.removeValue(S, name);
 end

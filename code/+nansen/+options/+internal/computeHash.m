@@ -7,6 +7,10 @@ function hash = computeHash(value)
 %
 %   See also nansen.options.internal.canonicalString
 
+    arguments
+        value
+    end
+
     hash = nansen.options.internal.sha256( ...
         nansen.options.internal.canonicalString(value) );
 end

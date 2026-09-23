@@ -14,104 +14,130 @@ classdef ProfileStore < handle
 %
 %   See also nansen.options.Manager nansen.options.Profile
 
-    properties (SetAccess = private)
-        RootFolder char = ''        % Root folder for all option profiles
-        MethodName char = ''        % Name of method
+    properties (SetAccess = immutable)
+        RootFolder (1,1) string = ""        % Root folder for all option profiles
+        MethodName (1,1) string = ""        % Name of method
     end
 
-    properties (Dependent)
-        FolderPath                  % Folder where profiles of this method are saved
+    properties (Dependent, SetAccess = private)
+        FolderPath (1,1) string             % Folder where profiles of this method are saved
     end
 
     properties (Constant, Hidden)
-        SETTINGS_FILENAME = '_settings.json'
+        SETTINGS_FILENAME = "_settings.json"
     end
 
     methods
         function obj = ProfileStore(rootFolder, methodName)
-            obj.RootFolder = char(rootFolder);
-            obj.MethodName = char(methodName);
+            arguments
+                rootFolder (1,1) string = ""
+                methodName (1,1) string = ""
+            end
+            obj.RootFolder = rootFolder;
+            obj.MethodName = methodName;
         end
 
-        function names = listProfileNames(obj)
-        %listProfileNames List names of all saved profiles
-            names = cell(1, 0);
+        function names = list(obj)
+        %list List names of all saved profiles
+            arguments
+                obj (1,1) nansen.options.ProfileStore
+            end
+
+            names = string.empty(1, 0);
             if ~isfolder(obj.FolderPath); return; end
 
-            L = dir(fullfile(obj.FolderPath, '*.json'));
+            L = dir(fullfile(obj.FolderPath, "*.json"));
             L = L(~strcmp({L.name}, obj.SETTINGS_FILENAME));
 
             for i = 1:numel(L)
+                filePath = fullfile(L(i).folder, L(i).name);
                 try
-                    S = readJson(fullfile(obj.FolderPath, L(i).name));
-                    names{end+1} = S.Name; %#ok<AGROW>
+                    S = readJson(filePath);
+                    names(end+1) = string(S.Name); %#ok<AGROW>
                 catch ME
-                    warning('NANSEN:Options:CorruptProfile', ...
-                        'Could not read profile file "%s": %s', L(i).name, ME.message)
+                    warning("NANSEN:Options:CorruptProfile", ...
+                        "Could not read profile file ""%s"": %s", filePath, ME.message)
                 end
             end
             names = sort(names);
         end
 
         function tf = exists(obj, name)
+        %exists Check if a profile with the given name is saved
+            arguments
+                obj (1,1) nansen.options.ProfileStore
+                name (1,1) string
+            end
             tf = isfile(obj.getFilePath(name));
         end
 
-        function profile = load(obj, name)
-        %load Load a profile
+        function profile = read(obj, name)
+        %read Read a profile
+            arguments
+                obj (1,1) nansen.options.ProfileStore
+                name (1,1) string
+            end
             filePath = obj.getFilePath(name);
             if ~isfile(filePath)
-                error('NANSEN:Options:ProfileNotFound', ...
-                    'No profile named "%s" exists for "%s"', name, obj.MethodName)
+                error("NANSEN:Options:ProfileNotFound", ...
+                    "No profile named ""%s"" exists for ""%s""", name, obj.MethodName)
             end
             profile = nansen.options.Profile.fromStruct(readJson(filePath));
         end
 
-        function save(obj, profile, allowOverwrite)
-        %save Save a profile
+        function write(obj, profile, options)
+        %write Write a profile to file
         %
-        %   store.save(profile) saves a profile. Throws an error if a
+        %   store.write(profile) saves a profile. Throws an error if a
         %   profile with the same name already exists.
         %
-        %   store.save(profile, true) overwrites an existing profile.
-
-            if nargin < 3; allowOverwrite = false; end
+        %   store.write(profile, Overwrite=true) overwrites an existing profile.
+            arguments
+                obj (1,1) nansen.options.ProfileStore
+                profile (1,1) nansen.options.Profile
+                options.Overwrite (1,1) logical = false
+            end
 
             filePath = obj.getFilePath(profile.Name);
 
             if isfile(filePath)
                 existing = readJson(filePath);
-                if ~strcmp(existing.Name, profile.Name)
-                    error('NANSEN:Options:NameConflict', ['Can not save profile ', ...
-                        '"%s" because its filename conflicts with profile "%s"'], ...
+                if string(existing.Name) ~= profile.Name
+                    error("NANSEN:Options:NameConflict", "Can not save profile " + ...
+                        """%s"" because its filename conflicts with profile ""%s""", ...
                         profile.Name, existing.Name)
-                elseif ~allowOverwrite
-                    error('NANSEN:Options:ProfileExists', ...
-                        'A profile named "%s" already exists for "%s"', ...
+                elseif ~options.Overwrite
+                    error("NANSEN:Options:ProfileExists", ...
+                        "A profile named ""%s"" already exists for ""%s""", ...
                         profile.Name, obj.MethodName)
                 end
             end
 
-            if ~isfolder(obj.FolderPath); mkdir(obj.FolderPath); end
             writeJson(filePath, profile.toStruct())
         end
 
         function remove(obj, name)
         %remove Delete a saved profile
-            filePath = obj.getFilePath(name);
-            if isfile(filePath)
-                delete(filePath)
-            else
-                error('NANSEN:Options:ProfileNotFound', ...
-                    'No profile named "%s" exists for "%s"', name, obj.MethodName)
+            arguments
+                obj (1,1) nansen.options.ProfileStore
+                name (1,1) string
             end
+            filePath = obj.getFilePath(name);
+            if ~isfile(filePath)
+                error("NANSEN:Options:ProfileNotFound", ...
+                    "No profile named ""%s"" exists for ""%s""", name, obj.MethodName)
+            end
+            delete(filePath)
         end
 
         function value = getSetting(obj, name, defaultValue)
         %getSetting Get a setting (e.g. name of default profile)
-            if nargin < 3; defaultValue = []; end
+            arguments
+                obj (1,1) nansen.options.ProfileStore
+                name (1,1) string
+                defaultValue = []
+            end
             value = defaultValue;
-
             filePath = fullfile(obj.FolderPath, obj.SETTINGS_FILENAME);
             if isfile(filePath)
                 S = readJson(filePath);
@@ -121,20 +147,25 @@ classdef ProfileStore < handle
 
         function setSetting(obj, name, value)
         %setSetting Set a setting (e.g. name of default profile)
-            filePath = fullfile(obj.FolderPath, obj.SETTINGS_FILENAME);
-            if isfile(filePath)
-                S = readJson(filePath);
-            else
-                S = struct();
+            arguments
+                obj (1,1) nansen.options.ProfileStore
+                name (1,1) string
+                value
             end
+            filePath = fullfile(obj.FolderPath, obj.SETTINGS_FILENAME);
+            S = struct();
+            if isfile(filePath); S = readJson(filePath); end
             S.(name) = value;
-
-            if ~isfolder(obj.FolderPath); mkdir(obj.FolderPath); end
             writeJson(filePath, S)
         end
 
         function filePath = getFilePath(obj, profileName)
-            fileName = [nansen.options.internal.sanitizeName(profileName), '.json'];
+        %getFilePath Get path to the file of a profile
+            arguments
+                obj (1,1) nansen.options.ProfileStore
+                profileName (1,1) string
+            end
+            fileName = nansen.options.internal.sanitizeName(profileName) + ".json";
             filePath = fullfile(obj.FolderPath, fileName);
         end
     end
@@ -152,19 +183,15 @@ function S = readJson(filePath)
 end
 
 function writeJson(filePath, S)
-%writeJson Write to a temporary file first to avoid corrupt files
-    jsonStr = nansen.options.internal.jsonEncode(S);
+%writeJson Write to a temporary file first, so files are never left corrupt
+    folderPath = fileparts(filePath);
+    if ~isfolder(folderPath); mkdir(folderPath); end
 
-    tempFilePath = [filePath, '.tmp'];
-    fid = fopen(tempFilePath, 'w', 'n', 'UTF-8');
-    if fid == -1
-        error('NANSEN:Options:FileError', 'Could not write to "%s"', filePath)
-    end
-    fprintf(fid, '%s', jsonStr);
-    fclose(fid);
+    tempFilePath = filePath + ".tmp";
+    writelines(nansen.options.internal.jsonEncode(S), tempFilePath)
 
-    [wasSuccess, message] = movefile(tempFilePath, filePath, 'f');
+    [wasSuccess, message] = movefile(tempFilePath, filePath, "f");
     if ~wasSuccess
-        error('NANSEN:Options:FileError', 'Could not write to "%s": %s', filePath, message)
+        error("NANSEN:Options:FileError", "Could not write to ""%s"": %s", filePath, message)
     end
 end
