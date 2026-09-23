@@ -1,0 +1,4 @@
+function name = sanitizeName(name)
+%sanitizeName Convert a name to a string that is safe to use as a filename
+    name = regexprep(char(name), '[^\w\.\-]', '_');
+end
