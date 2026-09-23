@@ -142,6 +142,9 @@ and decides how a value is validated and which control the editor shows.
 Methods that pass options to legacy code that expects character vectors
 should use char defaults (e.g. `'dffClassic'`).
 
+A struct with fields is always a group of parameters, so it can not be the
+default value of a single parameter.
+
 Text values are hashed by their content, so `"mean"` and `'mean'` give the
 same hash.
 
@@ -341,8 +344,8 @@ source file identifies the exact code even when it has uncommitted changes.
 - [x] Options editor app with profile management (`nansen.options.ui.OptionsEditor`)
 - [x] Legacy adapter: schema inference (incl. `+presets`), structeditor format, import of legacy options
 - [x] Example: `computeDff` defines `getOptionsSchema`, and a test checks that it matches the legacy defaults
-- [x] Unit tests in `tests/options` (run with `runtests("tests/options")`, UI
-      tests are tagged `UI`)
+- [x] Unit tests in `tests/options`. Add `code/` to the path first, then run
+      `runtests("tests/options")` (UI tests are tagged `UI`)
 
 **Phase 2: record options with results**
 - [ ] In `nansen.DataMethod`, resolve options through `nansen.options.Manager` and

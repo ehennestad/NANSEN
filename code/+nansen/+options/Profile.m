@@ -34,8 +34,8 @@ classdef Profile
         SchemaVersion (1,1) string = ""     % Version of schema profile was saved with
         DefaultsHash (1,1) string = ""      % Hash of schema defaults when profile was saved
         Snapshot (1,1) struct = struct()    % All values when profile was saved
-        Created (1,1) datetime = NaT("TimeZone", "UTC")
-        Modified (1,1) datetime = NaT("TimeZone", "UTC")
+        Created (1,1) datetime = datetime(NaN, NaN, NaN, TimeZone="UTC")
+        Modified (1,1) datetime = datetime(NaN, NaN, NaN, TimeZone="UTC")
         CreatedBy (1,1) string = ""
         NansenVersion (1,1) string = ""     % Version of NANSEN profile was saved with
     end

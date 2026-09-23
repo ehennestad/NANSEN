@@ -2,8 +2,8 @@ classdef ManagerTest < matlab.unittest.TestCase
 %ManagerTest Tests for nansen.options.Manager (profiles and resolution)
 
     properties
-        Schema nansen.options.Schema {mustBeScalarOrEmpty}
-        Manager nansen.options.Manager {mustBeScalarOrEmpty}
+        Schema
+        Manager
         Folder (1,1) string
     end
 
@@ -119,7 +119,7 @@ classdef ManagerTest < matlab.unittest.TestCase
             testCase.verifyEqual(restored.Hash, record.Hash)
             testCase.verifyEqual(string(restored.Provenance.Nansen.Commit), ...
                 string(record.Provenance.Nansen.Commit))
-            testCase.verifyEqual(restored.Created, record.Created, AbsTol=seconds(1))
+            testCase.verifyLessThanOrEqual(abs(restored.Created - record.Created), seconds(1))
         end
 
         function testDefaultProfile(testCase)

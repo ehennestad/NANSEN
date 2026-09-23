@@ -60,7 +60,15 @@ classdef LegacyCompatibilityTest < matlab.unittest.TestCase
 
         function testComputeDffSchemaMatchesLegacyDefaults(testCase)
             className = "ophys.twophoton.process.signalExtraction.computeDff";
-            schema = nansen.options.getSchema(className);
+            
+            % Loading the session method class requires a configured NANSEN
+            % installation (its legacy OptionsManager constant uses
+            % nansen.localpath).
+            try
+                schema = nansen.options.getSchema(className);
+            catch ME
+                testCase.assumeFail("Could not load computeDff (is NANSEN set up?): " + ME.message)
+            end
 
             testCase.verifyFalse(schema.IsInferred)
             testCase.verifyEqual(schema.Name, className)

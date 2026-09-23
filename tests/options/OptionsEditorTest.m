@@ -5,8 +5,8 @@ classdef (TestTags = {'UI'}) OptionsEditorTest < matlab.uitest.TestCase
 %       runtests("tests/options", ExcludeTag="UI")
 
     properties
-        Manager nansen.options.Manager {mustBeScalarOrEmpty}
-        Editor nansen.options.ui.OptionsEditor {mustBeScalarOrEmpty}
+        Manager
+        Editor
     end
 
     methods (TestClassSetup)

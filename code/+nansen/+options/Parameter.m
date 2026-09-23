@@ -90,6 +90,7 @@ classdef Parameter
             if nargin == 0; return; end
 
             nansen.options.Parameter.mustBeValidName(name)
+            nansen.options.Parameter.mustNotBeGroup(name, defaultValue)
             obj.Name = name;
             obj.Default = defaultValue;
             obj.Class = class(defaultValue);
@@ -115,6 +116,7 @@ classdef Parameter
             end
 
             if isfield(attributes, "Default")
+                nansen.options.Parameter.mustNotBeGroup(obj.Name, attributes.Default)
                 obj.Default = attributes.Default;
                 obj.Class = class(attributes.Default);
             end
@@ -147,14 +149,14 @@ classdef Parameter
                     isValid = isnumeric(value) && isreal(value);
                     message = "Value must be numeric";
                 case ParameterType.Text
-                    isValid = istext(value) && (isscalar(string(value)) || isempty(value));
+                    isValid = nansen.options.internal.isText(value) && (isscalar(string(value)) || isempty(value));
                     message = "Value must be text";
                 case ParameterType.List
                     isValid = iscell(value) || isstring(value);
                     message = "Value must be a list (cell array or string array)";
                 case ParameterType.Function
                     isValid = isa(value, "function_handle") || ...
-                        (istext(value) && strlength(string(value)) > 0);
+                        (nansen.options.internal.isText(value) && strlength(string(value)) > 0);
                     message = "Value must be a function handle or function name";
                 case ParameterType.Choice
                     isValid = obj.isValidChoice(value);
@@ -240,7 +242,7 @@ classdef Parameter
                         value = {};
                     end
                 case "function_handle"
-                    if istext(value) && strlength(string(value)) > 0
+                    if nansen.options.internal.isText(value) && strlength(string(value)) > 0
                         value = str2func(value);
                     end
             end
@@ -364,8 +366,8 @@ classdef Parameter
         end
 
         function tf = isValidChoice(obj, value)
-            if istext(value) && isscalar(string(value))
-                isTextChoice = cellfun(@(c) istext(c) && isscalar(string(c)), obj.Choices);
+            if nansen.options.internal.isText(value) && isscalar(string(value))
+                isTextChoice = cellfun(@(c) nansen.options.internal.isText(c) && isscalar(string(c)), obj.Choices);
                 textChoices = string(obj.Choices(isTextChoice));
                 tf = any(textChoices == string(value));
             elseif iscell(value) || (isstring(value) && ~isscalar(value)) % Multiple selection
@@ -378,6 +380,20 @@ classdef Parameter
     end
 
     methods (Static)
+        function mustNotBeGroup(name, value)
+        %mustNotBeGroup Validate that a default value is not a group
+        %
+        %   Scalar structs with fields represent groups of parameters, so
+        %   each field must be defined as a separate parameter instead.
+            if nansen.options.internal.isGroup(value)
+                fields = string(fieldnames(value));
+                throwAsCaller(MException("NANSEN:Options:InvalidDefault", ...
+                    "The default value of ""%s"" is a struct with fields. Define " + ...
+                    "each field as a separate parameter (e.g. ""%s.%s"") instead.", ...
+                    name, name, fields(1)))
+            end
+        end
+        
         function mustBeValidName(name)
         %mustBeValidName Validate that a parameter name is valid
         %
@@ -425,7 +441,8 @@ function [isValid, message] = runValidator(validatorFcn, value)
         catch ME
             % Anonymous functions report nargout = -1 (varargout) even if
             % the function they call has no output, e.g. @(x) assert(...)
-            if any(strcmp(ME.identifier, ["MATLAB:maxlhs", "MATLAB:TooManyOutputs"]))
+            if any(strcmp(ME.identifier, ["MATLAB:maxlhs", "MATLAB:TooManyOutputs"])) ...
+                    || ~isempty(regexpi(ME.message, "too many output", "once"))
                 validatorFcn(value);
                 return
             end

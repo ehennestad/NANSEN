@@ -35,7 +35,7 @@ classdef OptionsRecord
         RuntimeOverrides (1,1) struct = struct() % Values that were given at runtime
         Sources (1,1) struct = struct()     % Source of each value (same structure as Values)
         Hash (1,1) string = ""              % Fingerprint of (non-transient) values
-        Created (1,1) datetime = NaT("TimeZone", "UTC")
+        Created (1,1) datetime = datetime(NaN, NaN, NaN, TimeZone="UTC")
         MigrationLog (1,:) string = string.empty(1, 0) % Migrations applied to saved values
         Provenance nansen.options.Provenance {mustBeScalarOrEmpty} = nansen.options.Provenance.empty
     end

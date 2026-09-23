@@ -207,6 +207,7 @@ classdef OptionsEditor < handle
             if ~obj.ShowAdvancedCheckbox.Value && ~isempty(parameters)
                 parameters = parameters(~[parameters.Advanced]);
             end
+            if isempty(parameters); return; end
 
             groupNames = string(arrayfun(@getTopLevelGroup, parameters, UniformOutput=false));
 
@@ -526,7 +527,8 @@ function [control, readFcn] = createControl(parent, parameter, value, onChange)
         case ParameterType.Numeric
             if parameter.Widget == "color" && numel(value) == 3
                 [control, readFcn] = createColorButton(parent, value, callback);
-            elseif ~isscalar(value)
+            elseif ~isscalar(value) || ~isfinite(value)
+                % Numeric fields do not support NaN
                 [control, readFcn] = createArrayField(parent, value, callback);
             elseif parameter.Widget == "slider" && isfinite(parameter.Min) && isfinite(parameter.Max)
                 control = uislider(parent, Limits=[parameter.Min, parameter.Max], ...
@@ -626,7 +628,7 @@ function [control, readFcn] = createReadOnlyField(parent, value)
 end
 
 function label = choiceLabel(choice)
-    if istext(choice)
+    if nansen.options.internal.isText(choice)
         label = char(choice);
     else
         label = char(nansen.options.internal.valueToString(choice));
@@ -634,8 +636,8 @@ function label = choiceLabel(choice)
 end
 
 function value = parseArray(text, className)
-    value = str2num(text); %#ok<ST2NM> Allows MATLAB array syntax
-    if isempty(value) && ~any(strcmp(strtrim(text), ["[]", ""]))
+    [value, wasSuccess] = str2num(text); %#ok<ST2NM> Allows MATLAB array syntax
+    if ~wasSuccess
         error("NANSEN:Options:InvalidValue", "Could not parse ""%s"" as an array", text)
     end
     if className == "logical"

@@ -56,10 +56,12 @@ function out = encodeValue(value)
         if isscalar(value) && ~ismissing(value)
             out = value;
         else
-            data = cell(1, numel(value)); % Missing strings are stored as []
-            isPresent = ~ismissing(value(:)');
-            data(isPresent) = cellstr(value(isPresent));
-            out = createTaggedValue("string", value, data);
+            % Missing strings are stored as "" and listed by index
+            isMissing = ismissing(value(:)');
+            elements = value(:)';
+            elements(isMissing) = "";
+            out = createTaggedValue("string", value, cellstr(elements));
+            out.missing = find(isMissing);
         end
 
     elseif isenumeration(value)

@@ -11,7 +11,7 @@ function t = parseTimestamp(str)
     end
 
     if strlength(str) == 0
-        t = NaT("TimeZone", "UTC"); return
+        t = datetime(NaN, NaN, NaN, TimeZone="UTC"); return
     end
     t = datetime(str, "InputFormat", "yyyy-MM-dd'T'HH:mm:ss'Z'", "TimeZone", "UTC");
 end

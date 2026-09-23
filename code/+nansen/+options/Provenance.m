@@ -27,7 +27,7 @@ classdef Provenance
 %   See also nansen.options.OptionsRecord
 
     properties (SetAccess = private)
-        Timestamp (1,1) datetime = NaT("TimeZone", "UTC")
+        Timestamp (1,1) datetime = datetime(NaN, NaN, NaN, TimeZone="UTC")
         Nansen (1,1) struct = struct()      % Version, Commit, Branch, RemoteUrl, IsDirty, Path
         Matlab (1,1) struct = struct()      % Version, Release, Toolboxes, Addons
         Dependencies struct = struct("Name", {}, "FunctionName", {}, ...

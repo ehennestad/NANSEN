@@ -4,7 +4,7 @@ classdef SchemaTest < matlab.unittest.TestCase
 %   Run with: runtests("tests/options")
 
     properties
-        Schema nansen.options.Schema {mustBeScalarOrEmpty}
+        Schema
     end
 
     methods (TestClassSetup)
@@ -64,6 +64,9 @@ classdef SchemaTest < matlab.unittest.TestCase
                 "MATLAB:validators:mustBeMember")
             testCase.verifyError(@() nansen.options.Schema("x", Version="one"), ...
                 "NANSEN:Options:InvalidVersion")
+            % Structs with fields are groups, not parameter values
+            testCase.verifyError(@() s.addParameter("roi", struct("x", 1)), ...
+                "NANSEN:Options:InvalidDefault")
         end
 
         function testDuplicateAndConflictingNames(testCase)

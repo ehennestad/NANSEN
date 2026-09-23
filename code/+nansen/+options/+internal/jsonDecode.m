@@ -71,12 +71,10 @@ function value = decodeTaggedValue(S)
             if numElements == 0
                 value = strings(sz);
             else
-                elements = toCell(data);
-                isMissing = cellfun(@(c) isempty(c) && isnumeric(c), elements);
-                elements(isMissing) = {''};
-                value = string(elements);
-                value(isMissing) = missing;
-                value = reshape(value, sz);
+                value = reshape(string(toCell(data)), sz);
+                if isfield(S, "missing") && ~isempty(S.missing)
+                    value(S.missing) = missing;
+                end
             end
 
         case "enumeration"
@@ -93,8 +91,8 @@ function value = decodeTaggedValue(S)
         case "struct"
             fields = toCell(S.fields);
             if numElements == 0
-                args = [fields; repmat({{}}, 1, numel(fields))];
-                value = reshape(struct(args{:}), sz);
+                template = cell2struct(cell(numel(fields), 1), fields, 1);
+                value = repmat(template, sz);
             else
                 elements = cell(1, numElements);
                 for i = 1:numElements

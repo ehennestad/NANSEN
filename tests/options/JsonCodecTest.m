@@ -27,7 +27,6 @@ classdef JsonCodecTest < matlab.unittest.TestCase
             "charMatrix", ['ab'; 'cd'], ...
             "stringArray", ["a", "b"], ...
             "stringColumn", ["a"; "b"], ...
-            "stringWithMissing", ["a", missing], ...
             "emptyStringArray", strings(1, 0), ...
             "cellstr", {{'a', 'b'}}, ...
             "singleCellstr", {{'a'}}, ...
@@ -39,9 +38,10 @@ classdef JsonCodecTest < matlab.unittest.TestCase
             "structArray", struct("a", {1, 2}), ...
             "emptyStruct", struct("a", {}), ...
             "noFieldStruct", struct(), ...
-            "enumeration", nansen.options.ParameterType.Numeric, ...
-            "enumerationArray", [nansen.options.ProfileType.User, nansen.options.ProfileType.Preset], ...
+            "emptyNoFieldStruct", repmat(struct(), 1, 0), ...
             "datetime", datetime(2024, 1, 2, 3, 4, 5.5, TimeZone="UTC"))
+        % Note: Values of NANSEN classes are tested in separate tests, as
+        % test parameters are created before the path is set up.
     end
 
     methods (Test)
@@ -55,6 +55,26 @@ classdef JsonCodecTest < matlab.unittest.TestCase
             testCase.verifySize(decoded.value, size(value))
         end
 
+        function testEnumerationRoundTrip(testCase)
+            values = {nansen.options.ParameterType.Numeric, ...
+                [nansen.options.ProfileType.User, nansen.options.ProfileType.Preset]};
+            for i = 1:numel(values)
+                decoded = roundTrip(values{i});
+                testCase.verifyEqual(decoded, values{i})
+            end
+        end
+        
+        function testMissingStringRoundTrip(testCase)
+            values = {["a", missing], string(missing), [missing, missing]};
+            for i = 1:numel(values)
+                decoded = roundTrip(values{i});
+                testCase.verifyClass(decoded, "string")
+                testCase.verifySize(decoded, size(values{i}))
+                testCase.verifyEqual(ismissing(decoded), ismissing(values{i}))
+                testCase.verifyEqual(decoded(~ismissing(decoded)), values{i}(~ismissing(values{i})))
+            end
+        end
+        
         function testFunctionHandleRoundTrip(testCase)
             S = struct("fcn", @(x) x + 1);
             decoded = nansen.options.internal.jsonDecode( ...
@@ -69,4 +89,10 @@ classdef JsonCodecTest < matlab.unittest.TestCase
                 "{""a"":1,""b"":[1,2],""c"":""x"",""d"":[""x"",""y""],""e"":true,""f"":""y""}")
         end
     end
+end
+
+function decoded = roundTrip(value)
+    S = struct("value", {value});
+    decoded = nansen.options.internal.jsonDecode(nansen.options.internal.jsonEncode(S));
+    decoded = decoded.value;
 end

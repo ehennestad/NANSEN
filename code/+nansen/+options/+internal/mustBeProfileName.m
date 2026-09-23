@@ -6,7 +6,7 @@ function mustBeProfileName(value)
     arguments
         value (1,1) string
     end
-    if value ~= "" && isempty(regexp(value, "^[\p{L}\d][\p{L}\d _\-\.\(\)]*$", "once"))
+    if value ~= "" && isempty(regexp(value, "^[A-Za-z0-9][\w \-\.\(\)]*$", "once"))
         throwAsCaller(MException("NANSEN:Options:InvalidName", ...
             "Invalid profile name ""%s"". Use letters, numbers, spaces, " + ...
             "underscores, dashes, dots and parentheses.", value))
